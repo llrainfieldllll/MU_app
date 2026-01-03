@@ -49,18 +49,20 @@ def render_reference_matrix(z_score, vol_ratio, rsi):
     breakout_label = "🟠 BREAKOUT (Up)" if direction == "UP" else "🟠 WATERFALL (Crash)"
     exhaustion_label = "🔴 TOP REVERSAL" if direction == "UP" else "🟢 BOTTOM BOUNCE"
     
-    # 3. Define Rows
+    # 3. Define Rows (NOW WITH P-VALUES)
+    # Note: Ranges based on Student's t-distribution (df=5)
     rows = [
-        {"key": "normal", "cond": "Normal Noise", "z": "0.0 - 1.0 σ", "vol": "Any", "rsi": "30 - 70", "verdict": "🔵 WAIT / NEUTRAL"},
-        {"key": "trending", "cond": "Trending", "z": "1.0 - 2.0 σ", "vol": "Normal", "rsi": "50 - 70", "verdict": "🟢 FOLLOW TREND"},
-        {"key": "breakout", "cond": "High Momentum", "z": "> 2.0 σ", "vol": "> 1.2x (High)", "rsi": "Extreme", "verdict": breakout_label},
-        {"key": "exhaustion", "cond": "Exhaustion", "z": "> 2.0 σ", "vol": "< 0.8x (Low)", "rsi": "Divergence", "verdict": exhaustion_label},
-        {"key": "outlier", "cond": "Statistical Outlier", "z": "> 2.0 σ", "vol": "Normal", "rsi": "Extreme", "verdict": "⚠️ ANOMALY (Caution)"}
+        {"key": "normal", "cond": "Normal Noise", "z": "0.0 - 1.0 σ", "p": "> 19%", "vol": "Any", "rsi": "30 - 70", "verdict": "🔵 WAIT / NEUTRAL"},
+        {"key": "trending", "cond": "Trending", "z": "1.0 - 2.0 σ", "p": "5% - 19%", "vol": "Normal", "rsi": "50 - 70", "verdict": "🟢 FOLLOW TREND"},
+        {"key": "breakout", "cond": "High Momentum", "z": "> 2.0 σ", "p": "< 5%", "vol": "> 1.2x (High)", "rsi": "Extreme", "verdict": breakout_label},
+        {"key": "exhaustion", "cond": "Exhaustion", "z": "> 2.0 σ", "p": "< 5%", "vol": "< 0.8x (Low)", "rsi": "Divergence", "verdict": exhaustion_label},
+        {"key": "outlier", "cond": "Statistical Outlier", "z": "> 2.0 σ", "p": "< 5%", "vol": "Normal", "rsi": "Extreme", "verdict": "⚠️ ANOMALY (Caution)"}
     ]
 
     # 4. Build HTML (SAFE METHOD)
     html_parts = ['<table class="matrix-table">']
-    html_parts.append('<tr><th>Market Condition</th><th>Z-Score Range</th><th>Volume</th><th>RSI</th><th>Verdict</th></tr>')
+    # Added P-Value Header
+    html_parts.append('<tr><th>Market Condition</th><th>Z-Score</th><th>P-Value (Rarity)</th><th>Volume</th><th>RSI</th><th>Verdict</th></tr>')
     
     for row in rows:
         if row["key"] == active_key:
@@ -75,6 +77,7 @@ def render_reference_matrix(z_score, vol_ratio, rsi):
                 f'<tr class="{theme}">'
                 f'<td>👉 {row["cond"]}</td>'
                 f'<td>{row["z"]}</td>'
+                f'<td>{row["p"]}</td>'
                 f'<td>{row["vol"]}</td>'
                 f'<td>{row["rsi"]}</td>'
                 f'<td>{row["verdict"]}</td>'
@@ -86,6 +89,7 @@ def render_reference_matrix(z_score, vol_ratio, rsi):
                 '<tr class="faded">'
                 f'<td>{row["cond"]}</td>'
                 f'<td>{row["z"]}</td>'
+                f'<td>{row["p"]}</td>'
                 f'<td>{row["vol"]}</td>'
                 f'<td>{row["rsi"]}</td>'
                 f'<td>{row["verdict"]}</td>'
@@ -172,32 +176,30 @@ def main():
             if not m.get("valid", False): 
                 st.error("Calculation error."); st.stop()
 
-            # --- 1. KEY METRICS (RESTORED P-VALUE) ---
+            # --- 1. KEY METRICS ---
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Price", f"${m['price']:.2f}")
             c2.metric("Z-Score", f"{m['z']:.2f}σ")
             c3.metric("Volume", f"{m['vol']:.1f}x")
             
-            # P-Value is back!
             rarity_pct = m['p'] * 100
             c4.metric("Rarity (P-Value)", f"{rarity_pct:.2f}%", help="Lower % means more rare/extreme.")
 
             st.divider()
 
-            # --- 2. MATRIX (Auto-Highlighting) ---
+            # --- 2. MATRIX (NOW WITH P-VALUES) ---
             st.subheader("📊 Decision Matrix")
             render_reference_matrix(m['z'], m['vol'], m['rsi'])
 
             st.divider()
 
-            # --- 3. RESTORED TEXT ANALYSIS (The "Original Goal") ---
-            # We calculate the "Gap" (Price Magnet) here safely
+            # --- 3. RESTORED TEXT ANALYSIS ---
             gap = m['mu'] - m['price']
             direction_text = "above" if m['z'] > 0 else "below"
             
             st.markdown("### 📝 Statistical Observations")
             
-            # Using multi-line string to avoid syntax errors
+            # Using multi-line string for safety
             observation_text = f"""
             * **Rarity Analysis:** There is only a **{rarity_pct:.2f}% theoretical probability** of the price being this far {direction_text} the average.
             * **Mean Reversion Gap:** The 20-Day SMA is located at **${m['mu']:.2f}**. The distance between the current price and this statistical mean is **${gap:.2f}**.
