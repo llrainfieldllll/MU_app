@@ -32,12 +32,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- MATRIX ENGINE ---
+# --- 1. MATRIX ENGINE (UI Logic) ---
 def render_reference_matrix(z_score, vol_ratio, rsi):
     z_abs = abs(z_score)
     direction = "UP" if z_score > 0 else "DOWN"
     
-    # 1. Determine Active Key
+    # Determine Active Key
     active_key = "normal"
     if z_abs >= 1.0 and z_abs < 2.0:
         active_key = "trending"
@@ -46,11 +46,11 @@ def render_reference_matrix(z_score, vol_ratio, rsi):
         elif vol_ratio < 0.8: active_key = "exhaustion"
         else: active_key = "outlier"
     
-    # 2. Dynamic Text Logic
+    # Dynamic Text Logic
     breakout_label = "🟠 BREAKOUT (Up)" if direction == "UP" else "🟠 WATERFALL (Crash)"
     exhaustion_label = "🔴 TOP REVERSAL" if direction == "UP" else "🟢 BOTTOM BOUNCE"
     
-    # 3. Define Rows
+    # Define Rows
     rows = [
         {"key": "normal", "cond": "Normal Noise", "z": "0.0 - 1.0 σ", "p": "> 19%", "vol": "Any", "rsi": "30 - 70", "verdict": "🔵 WAIT / NEUTRAL"},
         {"key": "trending", "cond": "Trending", "z": "1.0 - 2.0 σ", "p": "5% - 19%", "vol": "Normal", "rsi": "50 - 70", "verdict": "🟢 FOLLOW TREND"},
@@ -59,7 +59,7 @@ def render_reference_matrix(z_score, vol_ratio, rsi):
         {"key": "outlier", "cond": "Statistical Outlier", "z": "> 2.0 σ", "p": "< 5%", "vol": "Normal", "rsi": "Extreme", "verdict": "⚠️ ANOMALY (Caution)"}
     ]
 
-    # 4. Build HTML
+    # Build HTML
     html_parts = ['<table class="matrix-table">']
     html_parts.append('<tr><th>Market Condition</th><th>Z-Score</th><th>P-Value (Rarity)</th><th>Volume</th><th>RSI</th><th>Verdict</th></tr>')
     
@@ -71,7 +71,6 @@ def render_reference_matrix(z_score, vol_ratio, rsi):
             elif "outlier" in active_key: theme = "highlight-orange"
             else: theme = "highlight-blue"
             
-            # Active Row
             row_html = (
                 f'<tr class="{theme}">'
                 f'<td>👉 {row["cond"]}</td>'
@@ -83,7 +82,6 @@ def render_reference_matrix(z_score, vol_ratio, rsi):
                 '</tr>'
             )
         else:
-            # Inactive Row
             row_html = (
                 '<tr class="faded">'
                 f'<td>{row["cond"]}</td>'
@@ -100,69 +98,119 @@ def render_reference_matrix(z_score, vol_ratio, rsi):
     st.markdown("".join(html_parts), unsafe_allow_html=True)
     return active_key
 
-# --- ROBUST DATA ENGINE (Fixes MU/MultiIndex Issues) ---
+# --- 2. DATA ENGINE (Red Team Approved) ---
 @st.cache_data(ttl=900, show_spinner=False)
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 def fetch_market_data(ticker):
     try:
-        # 1. Use download() instead of Ticker().history() - it's often more stable for single tickers
-        # threads=False helps prevent "hanging" on specific symbols
+        # Use download() with threads=False for maximum stability
         data = yf.download(ticker, period="6mo", interval="1d", progress=False, threads=False)
         
         if data.empty:
-            st.warning(f"Yahoo returned empty data for {ticker}. Try a different ticker.")
             return pd.DataFrame()
 
-        # 2. CRITICAL FIX: Flatten MultiIndex Columns
-        # If columns are like [('Close', 'MU'), ('Volume', 'MU')], this fixes it
+        # FIX: Flatten MultiIndex columns (e.g. ('Close', 'MU') -> 'Close')
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
 
-        # 3. Rename columns to ensure standard Capitalization (Close, Volume)
-        # Sometimes yahoo returns "close" (lowercase)
+        # FIX: Normalize column names to Title Case (Close, Volume)
         data.columns = [c.capitalize() for c in data.columns]
 
-        # 4. Ensure we have the necessary columns
-        if 'Close' not in data.columns or 'Volume' not in data.columns:
-             # Try mapping 'Adj close' to 'Close' if it exists
+        # FIX: Ensure critical columns exist
+        if 'Close' not in data.columns:
             if 'Adj close' in data.columns:
                 data['Close'] = data['Adj close']
             else:
-                return pd.DataFrame()
+                return pd.DataFrame() # Fail if no price data
 
-        # 5. Clean Timezone
+        # Fix Timezone
         if data.index.tz is not None:
             data.index = data.index.tz_localize(None)
 
-        # 6. Fill NaNs instead of dropping (preserves recent data)
+        # Fill gaps
         data = data.ffill().bfill()
         
         return data
 
-    except Exception as e:
-        st.error(f"Detailed Error for {ticker}: {str(e)}")
+    except Exception:
         return pd.DataFrame()
 
-# --- UI RENDERER ---
+# --- 3. MATH ENGINE (Restored) ---
+def calculate_metrics(df):
+    try:
+        # Sanity check
+        if df.empty or 'Close' not in df.columns:
+            return {"valid": False}
+            
+        prices = df['Close']
+        volumes = df['Volume']
+        current_price = prices.iloc[-1]
+        current_volume = volumes.iloc[-1]
+        
+        # Z-Score Calc
+        analysis_slice = prices.tail(20)
+        mu = analysis_slice.mean()
+        sigma = analysis_slice.std()
+        
+        if sigma == 0: 
+            z_score = 0; p_value = 0.5
+        else:
+            z_score = (current_price - mu) / sigma
+            if z_score > 0: p_value = 1 - t.cdf(z_score, df=5)
+            else: p_value = t.cdf(z_score, df=5)
+        
+        # Volume Ratio
+        vol_avg = volumes.tail(20).median()
+        # Prevent div/0
+        vol_ratio = (current_volume / vol_avg) if (vol_avg > 0 and not np.isnan(vol_avg)) else 1.0
+
+        # RSI Calc
+        delta = prices.diff()
+        gain = delta.where(delta > 0, 0)
+        loss = -delta.where(delta < 0, 0)
+        
+        avg_gain = gain.rolling(14).mean()
+        avg_loss = loss.rolling(14).mean()
+        
+        if len(avg_loss) > 0 and pd.notna(avg_loss.iloc[-1]):
+            last_loss = avg_loss.iloc[-1]
+            last_gain = avg_gain.iloc[-1]
+            if last_loss == 0: 
+                rsi = 100
+            else:
+                rs = last_gain / last_loss
+                rsi = 100 - (100 / (1 + rs))
+        else: 
+            rsi = 50
+
+        return {"price": current_price, "mu": mu, "z": z_score, "p": p_value, "vol": vol_ratio, "rsi": rsi, "valid": True}
+    except Exception: 
+        return {"valid": False}
+
+# --- 4. MAIN UI ---
 def main():
     st.title("🛡️ Quant Scanner: Statistical Analyzer")
     st.error("**LEGAL DISCLAIMER:** For Educational Purposes Only. Not financial advice.")
     
     with st.sidebar:
-        ticker = st.text_input("Ticker Symbol", "MU").upper()
+        # Input cleanup: Upper case and strip spaces
+        ticker_input = st.text_input("Ticker Symbol", "MU")
+        ticker = ticker_input.upper().strip()
         run_btn = st.button("Run Analysis", type="primary")
 
     if run_btn:
         with st.spinner(f"Scanning {ticker}..."):
+            # 1. Fetch
             data = fetch_market_data(ticker)
             if data.empty: 
-                st.error("Data fetch failed. Ticker may be invalid."); st.stop()
+                st.error(f"Data fetch failed for '{ticker}'. Check spelling or Yahoo API status."); st.stop()
             
+            # 2. Calculate (The previously missing function)
             m = calculate_metrics(data)
             if not m.get("valid", False): 
-                st.error("Calculation error."); st.stop()
+                st.error("Calculation error. Insufficient data points."); st.stop()
 
-            # --- 0. FAT TAIL BANNER (Restored) ---
+            # --- Logic: Fat Tail Banner ---
             is_fat_tail = abs(m['z']) > 2.0
             rarity_pct = m['p'] * 100
 
@@ -172,7 +220,7 @@ def main():
                     f"Probability: {rarity_pct:.2f}%. This is a statistical outlier."
                 )
 
-            # --- 1. KEY METRICS (Expanded to 5 Columns) ---
+            # --- Metrics Grid ---
             c1, c2, c3, c4, c5 = st.columns(5)
             
             c1.metric("Price", f"${m['price']:.2f}")
@@ -180,7 +228,7 @@ def main():
             c3.metric("Volume", f"{m['vol']:.1f}x")
             c4.metric("Rarity (P-Val)", f"{rarity_pct:.2f}%", help="Lower % means more rare/extreme.")
             
-            # RSI Logic for Color
+            # RSI Styling
             rsi_val = m['rsi']
             rsi_status = "Neutral"
             if rsi_val > 70: rsi_status = "Overbought"
@@ -190,13 +238,13 @@ def main():
 
             st.divider()
 
-            # --- 2. MATRIX ---
+            # --- Matrix ---
             st.subheader("📊 Decision Matrix")
             render_reference_matrix(m['z'], m['vol'], m['rsi'])
 
             st.divider()
 
-            # --- 3. OBSERVATIONS ---
+            # --- Observations ---
             gap = m['mu'] - m['price']
             direction_text = "above" if m['z'] > 0 else "below"
             
@@ -209,13 +257,13 @@ def main():
             """
             
             if is_fat_tail:
-                st.warning(observation_text) # Warning color if fat tail
+                st.warning(observation_text)
             else:
                 st.info(observation_text)
 
             st.divider()
 
-            # --- 4. VISUALIZATION ---
+            # --- Visualization ---
             x = np.linspace(-4, 4, 1000)
             y = t.pdf(x, df=5)
             fig = go.Figure()
