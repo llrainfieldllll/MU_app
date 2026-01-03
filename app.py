@@ -6,65 +6,75 @@ import plotly.graph_objects as go
 from scipy.stats import t
 from tenacity import retry, stop_after_attempt, wait_fixed
 
-# --- CONSTANTS ---
-MIN_DATA_POINTS = 30
-PAGE_TITLE = "Quant Scanner: Statistical Analyzer"
-
 # --- CONFIGURATION ---
-st.set_page_config(page_title=PAGE_TITLE, layout="wide")
+st.set_page_config(page_title="Quant Scanner: Reference Matrix", layout="wide")
 
-# --- HELPER: OBSERVATION ENGINE ---
-def get_technical_observation(z_score, vol_ratio, rsi):
+# --- CUSTOM CSS ---
+st.markdown("""
+<style>
+    .matrix-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-bottom: 20px; }
+    .matrix-table th { background-color: #262730; color: white; padding: 10px; text-align: left; border-bottom: 2px solid #444; }
+    .matrix-table td { padding: 10px; border-bottom: 1px solid #ddd; color: #333; }
+    
+    /* Highlight Classes */
+    .highlight-blue { background-color: #e3f2fd; border-left: 5px solid #2196f3; font-weight: bold; }
+    .highlight-green { background-color: #e8f5e9; border-left: 5px solid #4caf50; font-weight: bold; }
+    .highlight-orange { background-color: #fff3e0; border-left: 5px solid #ff9800; font-weight: bold; }
+    .highlight-red { background-color: #ffebee; border-left: 5px solid #f44336; font-weight: bold; }
+    
+    /* Faded Rows */
+    .faded { color: #999 !important; opacity: 0.7; }
+</style>
+""", unsafe_allow_html=True)
+
+# --- MATRIX ENGINE ---
+def render_reference_matrix(z_score, vol_ratio, rsi):
     z_abs = abs(z_score)
+    direction = "UP" if z_score > 0 else "DOWN"
     
-    # 1. NORMAL NOISE (0.0 - 1.0)
-    if z_abs < 1.0:
-        return {
-            "status": "✅ MARKET NOISE (NEUTRAL)",
-            "color": "blue",
-            "observation": "Price is within 1 standard deviation of the mean. No statistical anomaly detected."
-        }
+    # 1. Determine Active Key
+    active_key = "normal"
+    if z_abs >= 1.0 and z_abs < 2.0:
+        active_key = "trending"
+    elif z_abs >= 2.0:
+        if vol_ratio > 1.2: active_key = "breakout"
+        elif vol_ratio < 0.8: active_key = "exhaustion"
+        else: active_key = "outlier"
     
-    # 2. TRENDING (1.0 - 2.0)
-    elif z_abs >= 1.0 and z_abs < 2.0:
-        return {
-            "status": "ℹ️ TRENDING",
-            "color": "green",
-            "observation": "Price is trending. Statistical probability of continuation is currently higher than reversion."
-        }
+    # 2. Dynamic Text Logic (Domain Knowledge Fix)
+    # Adjusts labels based on whether Z is Positive (Bullish) or Negative (Bearish)
+    breakout_label = "🟠 BREAKOUT (Up)" if direction == "UP" else "🟠 WATERFALL (Crash)"
+    exhaustion_label = "🔴 TOP REVERSAL" if direction == "UP" else "🟢 BOTTOM BOUNCE"
     
-    # 3. EXTREME (> 2.0)
-    else: 
-        # A. HIGH VOLUME (Breakout)
-        if vol_ratio > 1.2:
-            return {
-                "status": "⚠️ HIGH VOLUME ANOMALY",
-                "color": "orange",
-                "observation": "Price is >2σ with high volume (>1.2x). Historically, this pattern often precedes a continued trend (Breakout) rather than an immediate reversion."
-            }
-        
-        # B. LOW VOLUME (Exhaustion)
-        elif vol_ratio < 0.8:
-            return {
-                "status": "🚨 STATISTICAL EXHAUSTION",
-                "color": "red",
-                "observation": "Price is >2σ on low volume. This divergence suggests weakening participation. Mean reversion probability is statistically elevated."
-            }
+    # 3. Define Rows
+    rows = [
+        {"key": "normal", "cond": "Normal Noise", "z": "0.0 - 1.0 σ", "vol": "Any", "rsi": "30 - 70", "verdict": "🔵 WAIT / NEUTRAL"},
+        {"key": "trending", "cond": "Trending", "z": "1.0 - 2.0 σ", "vol": "Normal", "rsi": "50 - 70", "verdict": "🟢 FOLLOW TREND"},
+        {"key": "breakout", "cond": "High Momentum", "z": "> 2.0 σ", "vol": "> 1.2x (High)", "rsi": "Extreme", "verdict": breakout_label},
+        {"key": "exhaustion", "cond": "Exhaustion", "z": "> 2.0 σ", "vol": "< 0.8x (Low)", "rsi": "Divergence", "verdict": exhaustion_label},
+        {"key": "outlier", "cond": "Statistical Outlier", "z": "> 2.0 σ", "vol": "Normal", "rsi": "Extreme", "verdict": "⚠️ ANOMALY (Caution)"}
+    ]
+
+    # 4. Build HTML
+    html = '<table class="matrix-table">'
+    html += '<tr><th>Market Condition</th><th>Z-Score Range</th><th>Volume</th><th>RSI</th><th>Verdict</th></tr>'
+    
+    for row in rows:
+        if row["key"] == active_key:
+            # Assign color theme
+            if "breakout" in active_key: theme = "highlight-orange"
+            elif "exhaustion" in active_key: theme = "highlight-red" if direction == "UP" else "highlight-green"
+            elif "trending" in active_key: theme = "highlight-green"
+            elif "outlier" in active_key: theme = "highlight-orange"
+            else: theme = "highlight-blue"
             
-        # C. RSI EXTREME
-        elif rsi > 70 or rsi < 30:
-            return {
-                "status": "⚠️ OSCILLATOR EXTREME",
-                "color": "red",
-                "observation": f"RSI is at {rsi:.0f}. Combined with Z-Score >2.0, this indicates a statistically overextended condition."
-            }
-            
+            html += f'<tr class="{theme}"><td>👉 {row["cond"]}</td><td>{row["z"]}</td><td>{row["vol"]}</td><td>{row["rsi"]}</td><td>{row["verdict"]}</td></tr>'
         else:
-            return {
-                "status": "⚠️ STATISTICAL OUTLIER",
-                "color": "yellow",
-                "observation": "Price is currently a statistical outlier. Volatility is elevated."
-            }
+            html += f'<tr class="faded"><td>{row["cond"]}</td><td>{row["z"]}</td><td>{row["vol"]}</td><td>{row["rsi"]}</td><td>{row["verdict"]}</td></tr>'
+            
+    html += '</table>'
+    st.markdown(html, unsafe_allow_html=True)
+    return active_key
 
 # --- DATA ENGINE ---
 @st.cache_data(ttl=900, show_spinner=False)
@@ -73,10 +83,8 @@ def fetch_market_data(ticker):
     try:
         ticker_obj = yf.Ticker(ticker)
         data = ticker_obj.history(period="6mo", interval="1d")
-        
         if data.empty: return pd.DataFrame()
         if data.index.tz is not None: data.index = data.index.tz_localize(None)
-        
         return data.dropna()
     except Exception:
         return pd.DataFrame()
@@ -85,164 +93,24 @@ def calculate_metrics(df):
     try:
         prices = df['Close']
         volumes = df['Volume']
-        
         current_price = prices.iloc[-1]
         current_volume = volumes.iloc[-1]
         
-        # --- Z-SCORE ENGINE ---
+        # Z-Score
         analysis_slice = prices.tail(20)
         mu = analysis_slice.mean()
         sigma = analysis_slice.std()
         
-        if sigma == 0:
-            z_score = 0
-            p_value = 0.5
+        if sigma == 0: z_score = 0; p_value = 0.5
         else:
             z_score = (current_price - mu) / sigma
-            # Student's t (df=5) for Fat Tails
-            if z_score > 0:
-                p_value = 1 - t.cdf(z_score, df=5)
-            else:
-                p_value = t.cdf(z_score, df=5)
+            if z_score > 0: p_value = 1 - t.cdf(z_score, df=5)
+            else: p_value = t.cdf(z_score, df=5)
         
-        # --- VOLUME ENGINE ---
+        # Volume
         vol_avg = volumes.tail(20).median()
         vol_ratio = (current_volume / vol_avg) if vol_avg > 0 else 1.0
 
-        # --- RSI ENGINE ---
+        # RSI
         delta = prices.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        
-        if len(loss) > 0 and pd.notna(loss.iloc[-1]):
-            last_loss = loss.iloc[-1]
-            last_gain = gain.iloc[-1]
-            if last_loss == 0:
-                rsi = 100
-            else:
-                rs = last_gain / last_loss
-                rsi = 100 - (100 / (1 + rs))
-        else:
-            rsi = 50
-
-        return {
-            "price": current_price,
-            "mu": mu,
-            "z": z_score,
-            "p": p_value,
-            "vol": vol_ratio,
-            "rsi": rsi,
-            "valid": True
-        }
-    except Exception:
-        return {"valid": False}
-
-# --- UI RENDERER ---
-def main():
-    st.title("🛡️ Quant Scanner: Statistical Analyzer")
-    
-    st.error("""
-    **LEGAL DISCLAIMER:** This tool is for **Educational Purposes Only**. 
-    The "Observations" below are generated by a statistical algorithm and do NOT constitute financial advice. 
-    Data is sourced from third parties and may be inaccurate. 
-    """)
-    
-    with st.sidebar:
-        st.header("Configuration")
-        ticker = st.text_input("Ticker Symbol", "MU").upper()
-        run_btn = st.button("Run Analysis", type="primary")
-
-    if run_btn:
-        with st.spinner(f"Calculating statistical profile for {ticker}..."):
-            data = fetch_market_data(ticker)
-            
-            if data.empty:
-                st.warning(f"⚠️ Unable to fetch data for '{ticker}'.")
-                st.stop()
-
-            m = calculate_metrics(data)
-
-            if not m.get("valid", False):
-                st.error("⚠️ Error calculating metrics.")
-                st.stop()
-
-            obs = get_technical_observation(m['z'], m['vol'], m['rsi'])
-
-            # --- TOP LEVEL STATUS ---
-            st.subheader(obs['status'])
-            st.info(f"**Technical Observation:** {obs['observation']}")
-
-            # --- KEY METRICS ---
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Price", f"${m['price']:.2f}")
-            c2.metric("20-Day SMA", f"${m['mu']:.2f}")
-            c3.metric("Z-Score", f"{m['z']:.2f}σ")
-            c4.metric("Rarity (P-Value)", f"{m['p']*100:.2f}%", help="Theoretical probability of this price level.")
-
-            # --- SECONDARY METRICS (Volume & RSI & Gap) ---
-            c5, c6, c7, c8 = st.columns(4)
-            c5.metric("Volume Ratio", f"{m['vol']:.1f}x", delta="High" if m['vol']>1.2 else "Normal")
-            c6.metric("RSI (14)", f"{m['rsi']:.1f}", help=">70 Overbought, <30 Oversold")
-            
-            # --- FIX: SAFE GAP CALCULATION ---
-            mean_reversion_gap = m['mu'] - m['price']
-            gap_formatted = f"${mean_reversion_gap:.2f}"
-            gap_label = "Distance to Mean"
-            
-            c7.metric("Mean Reversion Gap", gap_formatted, delta=gap_label, delta_color="off")
-            c8.write("") # Spacer
-
-            st.divider()
-
-            # --- TEXT ANALYSIS ---
-            z = m['z']
-            direction = "above" if z > 0 else "below"
-            
-            st.markdown(f"""
-            ### 📊 Detailed Statistical Breakdown
-            
-            * **Probability Event:** Statistically, there is a **{m['p']*100:.2f}% theoretical chance** of the stock being this far {direction} its 20-Day SMA (adjusted for fat tails).
-            
-            * **Statistical Mean:** The 20-Day SMA (**${m['mu']:.2f}**) represents the statistical mean. In a mean-reversion scenario, a move back to this level would represent a **{gap_formatted}** price adjustment.
-            
-            * **Oscillator Status:** The RSI is currently **{m['rsi']:.1f}**. {'Values above 70 indicate momentum is technically overbought.' if m['rsi'] > 70 else 'Values below 30 indicate momentum is technically oversold.' if m['rsi'] < 30 else 'Momentum is within a neutral technical range.'}
-            """)
-
-            st.divider()
-
-            # --- VISUALIZATION ---
-            x = np.linspace(-4, 4, 1000)
-            y = t.pdf(x, df=5)
-            
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=x, y=y, mode='lines', line=dict(color='#333', width=2), name='Probability Dist'))
-            
-            line_col = "#FF4B4B" if abs(z) >= 2 else "#2ECC71"
-            fig.add_vline(x=z, line_width=2, line_dash="dash", line_color=line_col)
-            
-            if z > 0:
-                fill_x = x[x >= z]
-                fill_y = y[x >= z]
-            else:
-                fill_x = x[x <= z]
-                fill_y = y[x <= z]
-            
-            fig.add_trace(go.Scatter(x=fill_x, y=fill_y, fill='tozeroy', fillcolor='rgba(255,0,0,0.2)', line=dict(width=0), name='Tail Region'))
-
-            fig.add_annotation(
-                x=z, y=0.35, 
-                text=f"CURRENT<br>{z:.2f}σ", 
-                showarrow=True, arrowhead=2, 
-                font=dict(color=line_col, size=12)
-            )
-
-            fig.update_layout(
-                template="plotly_white", 
-                title=f"Statistical Distribution ({ticker})", 
-                height=450, 
-                showlegend=False
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-if __name__ == "__main__":
-    main()
+        gain = (delta
