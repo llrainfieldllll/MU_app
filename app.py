@@ -177,15 +177,72 @@ def main():
             c1.metric("Price", f"${m['price']:.2f}")
             c2.metric("20-Day SMA", f"${m['mu']:.2f}")
             c3.metric("Z-Score", f"{m['z']:.2f}σ")
-            # RESTORED: P-Value Rarity
             c4.metric("Rarity (P-Value)", f"{m['p']*100:.2f}%", help="Theoretical probability of this price level.")
 
-            # --- SECONDARY METRICS (Volume & RSI) ---
+            # --- SECONDARY METRICS (Volume & RSI & Gap) ---
             c5, c6, c7, c8 = st.columns(4)
             c5.metric("Volume Ratio", f"{m['vol']:.1f}x", delta="High" if m['vol']>1.2 else "Normal")
-            # RESTORED: RSI
             c6.metric("RSI (14)", f"{m['rsi']:.1f}", help=">70 Overbought, <30 Oversold")
             
-            # RESTORED: "Price Magnet" Calculation
-            diff = m['mu'] - m['price']
-            c7.metric("Mean Reversion Gap", f"${diff:.2f
+            # --- FIX: SAFE GAP CALCULATION ---
+            mean_reversion_gap = m['mu'] - m['price']
+            gap_formatted = f"${mean_reversion_gap:.2f}"
+            gap_label = "Distance to Mean"
+            
+            c7.metric("Mean Reversion Gap", gap_formatted, delta=gap_label, delta_color="off")
+            c8.write("") # Spacer
+
+            st.divider()
+
+            # --- TEXT ANALYSIS ---
+            z = m['z']
+            direction = "above" if z > 0 else "below"
+            
+            st.markdown(f"""
+            ### 📊 Detailed Statistical Breakdown
+            
+            * **Probability Event:** Statistically, there is a **{m['p']*100:.2f}% theoretical chance** of the stock being this far {direction} its 20-Day SMA (adjusted for fat tails).
+            
+            * **Statistical Mean:** The 20-Day SMA (**${m['mu']:.2f}**) represents the statistical mean. In a mean-reversion scenario, a move back to this level would represent a **{gap_formatted}** price adjustment.
+            
+            * **Oscillator Status:** The RSI is currently **{m['rsi']:.1f}**. {'Values above 70 indicate momentum is technically overbought.' if m['rsi'] > 70 else 'Values below 30 indicate momentum is technically oversold.' if m['rsi'] < 30 else 'Momentum is within a neutral technical range.'}
+            """)
+
+            st.divider()
+
+            # --- VISUALIZATION ---
+            x = np.linspace(-4, 4, 1000)
+            y = t.pdf(x, df=5)
+            
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=x, y=y, mode='lines', line=dict(color='#333', width=2), name='Probability Dist'))
+            
+            line_col = "#FF4B4B" if abs(z) >= 2 else "#2ECC71"
+            fig.add_vline(x=z, line_width=2, line_dash="dash", line_color=line_col)
+            
+            if z > 0:
+                fill_x = x[x >= z]
+                fill_y = y[x >= z]
+            else:
+                fill_x = x[x <= z]
+                fill_y = y[x <= z]
+            
+            fig.add_trace(go.Scatter(x=fill_x, y=fill_y, fill='tozeroy', fillcolor='rgba(255,0,0,0.2)', line=dict(width=0), name='Tail Region'))
+
+            fig.add_annotation(
+                x=z, y=0.35, 
+                text=f"CURRENT<br>{z:.2f}σ", 
+                showarrow=True, arrowhead=2, 
+                font=dict(color=line_col, size=12)
+            )
+
+            fig.update_layout(
+                template="plotly_white", 
+                title=f"Statistical Distribution ({ticker})", 
+                height=450, 
+                showlegend=False
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+if __name__ == "__main__":
+    main()
