@@ -100,61 +100,48 @@ def render_reference_matrix(z_score, vol_ratio, rsi):
     st.markdown("".join(html_parts), unsafe_allow_html=True)
     return active_key
 
-# --- DATA ENGINE ---
+# --- ROBUST DATA ENGINE (Fixes MU/MultiIndex Issues) ---
 @st.cache_data(ttl=900, show_spinner=False)
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 def fetch_market_data(ticker):
     try:
-        ticker_obj = yf.Ticker(ticker)
-        data = ticker_obj.history(period="6mo", interval="1d")
-        if data.empty: return pd.DataFrame()
-        if data.index.tz is not None: data.index = data.index.tz_localize(None)
-        return data.dropna()
-    except Exception:
-        return pd.DataFrame()
+        # 1. Use download() instead of Ticker().history() - it's often more stable for single tickers
+        # threads=False helps prevent "hanging" on specific symbols
+        data = yf.download(ticker, period="6mo", interval="1d", progress=False, threads=False)
+        
+        if data.empty:
+            st.warning(f"Yahoo returned empty data for {ticker}. Try a different ticker.")
+            return pd.DataFrame()
 
-def calculate_metrics(df):
-    try:
-        prices = df['Close']
-        volumes = df['Volume']
-        current_price = prices.iloc[-1]
-        current_volume = volumes.iloc[-1]
-        
-        # Z-Score
-        analysis_slice = prices.tail(20)
-        mu = analysis_slice.mean()
-        sigma = analysis_slice.std()
-        
-        if sigma == 0: z_score = 0; p_value = 0.5
-        else:
-            z_score = (current_price - mu) / sigma
-            if z_score > 0: p_value = 1 - t.cdf(z_score, df=5)
-            else: p_value = t.cdf(z_score, df=5)
-        
-        # Volume
-        vol_avg = volumes.tail(20).median()
-        vol_ratio = (current_volume / vol_avg) if vol_avg > 0 else 1.0
+        # 2. CRITICAL FIX: Flatten MultiIndex Columns
+        # If columns are like [('Close', 'MU'), ('Volume', 'MU')], this fixes it
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
 
-        # RSI (Split for safety)
-        delta = prices.diff()
-        gain = delta.where(delta > 0, 0)
-        loss = -delta.where(delta < 0, 0)
-        
-        avg_gain = gain.rolling(14).mean()
-        avg_loss = loss.rolling(14).mean()
-        
-        if len(avg_loss) > 0 and pd.notna(avg_loss.iloc[-1]):
-            last_loss = avg_loss.iloc[-1]
-            last_gain = avg_gain.iloc[-1]
-            if last_loss == 0: rsi = 100
+        # 3. Rename columns to ensure standard Capitalization (Close, Volume)
+        # Sometimes yahoo returns "close" (lowercase)
+        data.columns = [c.capitalize() for c in data.columns]
+
+        # 4. Ensure we have the necessary columns
+        if 'Close' not in data.columns or 'Volume' not in data.columns:
+             # Try mapping 'Adj close' to 'Close' if it exists
+            if 'Adj close' in data.columns:
+                data['Close'] = data['Adj close']
             else:
-                rs = last_gain / last_loss
-                rsi = 100 - (100 / (1 + rs))
-        else: 
-            rsi = 50
+                return pd.DataFrame()
 
-        return {"price": current_price, "mu": mu, "z": z_score, "p": p_value, "vol": vol_ratio, "rsi": rsi, "valid": True}
-    except Exception: return {"valid": False}
+        # 5. Clean Timezone
+        if data.index.tz is not None:
+            data.index = data.index.tz_localize(None)
+
+        # 6. Fill NaNs instead of dropping (preserves recent data)
+        data = data.ffill().bfill()
+        
+        return data
+
+    except Exception as e:
+        st.error(f"Detailed Error for {ticker}: {str(e)}")
+        return pd.DataFrame()
 
 # --- UI RENDERER ---
 def main():
