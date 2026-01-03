@@ -1,4 +1,5 @@
 import streamlit as st
+
 # --- CRITICAL: PAGE CONFIG MUST BE FIRST ---
 st.set_page_config(page_title="Quant Scanner: Statistical Analyzer", layout="wide")
 
@@ -49,8 +50,7 @@ def render_reference_matrix(z_score, vol_ratio, rsi):
     breakout_label = "🟠 BREAKOUT (Up)" if direction == "UP" else "🟠 WATERFALL (Crash)"
     exhaustion_label = "🔴 TOP REVERSAL" if direction == "UP" else "🟢 BOTTOM BOUNCE"
     
-    # 3. Define Rows (NOW WITH P-VALUES)
-    # Note: Ranges based on Student's t-distribution (df=5)
+    # 3. Define Rows
     rows = [
         {"key": "normal", "cond": "Normal Noise", "z": "0.0 - 1.0 σ", "p": "> 19%", "vol": "Any", "rsi": "30 - 70", "verdict": "🔵 WAIT / NEUTRAL"},
         {"key": "trending", "cond": "Trending", "z": "1.0 - 2.0 σ", "p": "5% - 19%", "vol": "Normal", "rsi": "50 - 70", "verdict": "🟢 FOLLOW TREND"},
@@ -59,9 +59,8 @@ def render_reference_matrix(z_score, vol_ratio, rsi):
         {"key": "outlier", "cond": "Statistical Outlier", "z": "> 2.0 σ", "p": "< 5%", "vol": "Normal", "rsi": "Extreme", "verdict": "⚠️ ANOMALY (Caution)"}
     ]
 
-    # 4. Build HTML (SAFE METHOD)
+    # 4. Build HTML
     html_parts = ['<table class="matrix-table">']
-    # Added P-Value Header
     html_parts.append('<tr><th>Market Condition</th><th>Z-Score</th><th>P-Value (Rarity)</th><th>Volume</th><th>RSI</th><th>Verdict</th></tr>')
     
     for row in rows:
@@ -176,36 +175,56 @@ def main():
             if not m.get("valid", False): 
                 st.error("Calculation error."); st.stop()
 
-            # --- 1. KEY METRICS ---
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Price", f"${m['price']:.2f}")
-            c2.metric("Z-Score", f"{m['z']:.2f}σ")
-            c3.metric("Volume", f"{m['vol']:.1f}x")
-            
+            # --- 0. FAT TAIL BANNER (Restored) ---
+            is_fat_tail = abs(m['z']) > 2.0
             rarity_pct = m['p'] * 100
-            c4.metric("Rarity (P-Value)", f"{rarity_pct:.2f}%", help="Lower % means more rare/extreme.")
+
+            if is_fat_tail:
+                st.error(
+                    f"🚨 FAT TAIL DETECTED: Price is {m['z']:.2f}σ from mean. "
+                    f"Probability: {rarity_pct:.2f}%. This is a statistical outlier."
+                )
+
+            # --- 1. KEY METRICS (Expanded to 5 Columns) ---
+            c1, c2, c3, c4, c5 = st.columns(5)
+            
+            c1.metric("Price", f"${m['price']:.2f}")
+            c2.metric("Z-Score", f"{m['z']:.2f}σ", delta="Extreme" if is_fat_tail else "Normal", delta_color="inverse")
+            c3.metric("Volume", f"{m['vol']:.1f}x")
+            c4.metric("Rarity (P-Val)", f"{rarity_pct:.2f}%", help="Lower % means more rare/extreme.")
+            
+            # RSI Logic for Color
+            rsi_val = m['rsi']
+            rsi_status = "Neutral"
+            if rsi_val > 70: rsi_status = "Overbought"
+            elif rsi_val < 30: rsi_status = "Oversold"
+            
+            c5.metric("RSI (14)", f"{rsi_val:.1f}", delta=rsi_status, delta_color="off")
 
             st.divider()
 
-            # --- 2. MATRIX (NOW WITH P-VALUES) ---
+            # --- 2. MATRIX ---
             st.subheader("📊 Decision Matrix")
             render_reference_matrix(m['z'], m['vol'], m['rsi'])
 
             st.divider()
 
-            # --- 3. RESTORED TEXT ANALYSIS ---
+            # --- 3. OBSERVATIONS ---
             gap = m['mu'] - m['price']
             direction_text = "above" if m['z'] > 0 else "below"
             
             st.markdown("### 📝 Statistical Observations")
             
-            # Using multi-line string for safety
             observation_text = f"""
             * **Rarity Analysis:** There is only a **{rarity_pct:.2f}% theoretical probability** of the price being this far {direction_text} the average.
             * **Mean Reversion Gap:** The 20-Day SMA is located at **${m['mu']:.2f}**. The distance between the current price and this statistical mean is **${gap:.2f}**.
             * **Momentum Context:** RSI is at **{m['rsi']:.1f}**. (Values >70 are typically Overbought, <30 are Oversold).
             """
-            st.info(observation_text)
+            
+            if is_fat_tail:
+                st.warning(observation_text) # Warning color if fat tail
+            else:
+                st.info(observation_text)
 
             st.divider()
 
