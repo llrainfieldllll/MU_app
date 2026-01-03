@@ -1,6 +1,6 @@
 import streamlit as st
 # --- CRITICAL: PAGE CONFIG MUST BE FIRST ---
-st.set_page_config(page_title="Quant Scanner: Reference Matrix", layout="wide")
+st.set_page_config(page_title="Quant Scanner: Statistical Analyzer", layout="wide")
 
 import yfinance as yf
 import pandas as pd
@@ -58,12 +58,11 @@ def render_reference_matrix(z_score, vol_ratio, rsi):
         {"key": "outlier", "cond": "Statistical Outlier", "z": "> 2.0 σ", "vol": "Normal", "rsi": "Extreme", "verdict": "⚠️ ANOMALY (Caution)"}
     ]
 
-    # 4. Build HTML (SAFE METHOD - NO GIANT F-STRINGS)
+    # 4. Build HTML (SAFE METHOD)
     html_parts = ['<table class="matrix-table">']
     html_parts.append('<tr><th>Market Condition</th><th>Z-Score Range</th><th>Volume</th><th>RSI</th><th>Verdict</th></tr>')
     
     for row in rows:
-        # Determine styling
         if row["key"] == active_key:
             if "breakout" in active_key: theme = "highlight-orange"
             elif "exhaustion" in active_key: theme = "highlight-red" if direction == "UP" else "highlight-green"
@@ -71,7 +70,7 @@ def render_reference_matrix(z_score, vol_ratio, rsi):
             elif "outlier" in active_key: theme = "highlight-orange"
             else: theme = "highlight-blue"
             
-            # Active Row (Highlighted)
+            # Active Row
             row_html = (
                 f'<tr class="{theme}">'
                 f'<td>👉 {row["cond"]}</td>'
@@ -82,7 +81,7 @@ def render_reference_matrix(z_score, vol_ratio, rsi):
                 '</tr>'
             )
         else:
-            # Inactive Row (Faded)
+            # Inactive Row
             row_html = (
                 '<tr class="faded">'
                 f'<td>{row["cond"]}</td>'
@@ -95,10 +94,7 @@ def render_reference_matrix(z_score, vol_ratio, rsi):
         html_parts.append(row_html)
             
     html_parts.append('</table>')
-    
-    # Join all parts safely
-    final_html = "".join(html_parts)
-    st.markdown(final_html, unsafe_allow_html=True)
+    st.markdown("".join(html_parts), unsafe_allow_html=True)
     return active_key
 
 # --- DATA ENGINE ---
@@ -136,7 +132,7 @@ def calculate_metrics(df):
         vol_avg = volumes.tail(20).median()
         vol_ratio = (current_volume / vol_avg) if vol_avg > 0 else 1.0
 
-        # RSI Calculation (Broken down for safety)
+        # RSI (Split for safety)
         delta = prices.diff()
         gain = delta.where(delta > 0, 0)
         loss = -delta.where(delta < 0, 0)
@@ -147,8 +143,7 @@ def calculate_metrics(df):
         if len(avg_loss) > 0 and pd.notna(avg_loss.iloc[-1]):
             last_loss = avg_loss.iloc[-1]
             last_gain = avg_gain.iloc[-1]
-            if last_loss == 0: 
-                rsi = 100
+            if last_loss == 0: rsi = 100
             else:
                 rs = last_gain / last_loss
                 rsi = 100 - (100 / (1 + rs))
@@ -160,7 +155,7 @@ def calculate_metrics(df):
 
 # --- UI RENDERER ---
 def main():
-    st.title("🛡️ Quant Scanner: Decision Matrix")
+    st.title("🛡️ Quant Scanner: Statistical Analyzer")
     st.error("**LEGAL DISCLAIMER:** For Educational Purposes Only. Not financial advice.")
     
     with st.sidebar:
@@ -171,29 +166,48 @@ def main():
         with st.spinner(f"Scanning {ticker}..."):
             data = fetch_market_data(ticker)
             if data.empty: 
-                st.error("Data fetch failed. Ticker may be invalid or Yahoo is blocking requests."); st.stop()
+                st.error("Data fetch failed. Ticker may be invalid."); st.stop()
             
             m = calculate_metrics(data)
             if not m.get("valid", False): 
                 st.error("Calculation error."); st.stop()
 
-            # --- 1. KEY METRICS ---
+            # --- 1. KEY METRICS (RESTORED P-VALUE) ---
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Price", f"${m['price']:.2f}")
             c2.metric("Z-Score", f"{m['z']:.2f}σ")
             c3.metric("Volume", f"{m['vol']:.1f}x")
-            c4.metric("RSI", f"{m['rsi']:.1f}")
+            
+            # P-Value is back!
+            rarity_pct = m['p'] * 100
+            c4.metric("Rarity (P-Value)", f"{rarity_pct:.2f}%", help="Lower % means more rare/extreme.")
 
             st.divider()
 
-            # --- 2. THE MATRIX (Auto-Highlighting) ---
-            st.subheader("📊 Statistical Reference Matrix")
+            # --- 2. MATRIX (Auto-Highlighting) ---
+            st.subheader("📊 Decision Matrix")
             render_reference_matrix(m['z'], m['vol'], m['rsi'])
-            st.caption("Rows are highlighted based on the combination of Z-Score and Volume.")
 
             st.divider()
 
-            # --- 3. VISUALIZATION ---
+            # --- 3. RESTORED TEXT ANALYSIS (The "Original Goal") ---
+            # We calculate the "Gap" (Price Magnet) here safely
+            gap = m['mu'] - m['price']
+            direction_text = "above" if m['z'] > 0 else "below"
+            
+            st.markdown("### 📝 Statistical Observations")
+            
+            # Using multi-line string to avoid syntax errors
+            observation_text = f"""
+            * **Rarity Analysis:** There is only a **{rarity_pct:.2f}% theoretical probability** of the price being this far {direction_text} the average.
+            * **Mean Reversion Gap:** The 20-Day SMA is located at **${m['mu']:.2f}**. The distance between the current price and this statistical mean is **${gap:.2f}**.
+            * **Momentum Context:** RSI is at **{m['rsi']:.1f}**. (Values >70 are typically Overbought, <30 are Oversold).
+            """
+            st.info(observation_text)
+
+            st.divider()
+
+            # --- 4. VISUALIZATION ---
             x = np.linspace(-4, 4, 1000)
             y = t.pdf(x, df=5)
             fig = go.Figure()
