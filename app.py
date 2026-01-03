@@ -41,8 +41,7 @@ def render_reference_matrix(z_score, vol_ratio, rsi):
         elif vol_ratio < 0.8: active_key = "exhaustion"
         else: active_key = "outlier"
     
-    # 2. Dynamic Text Logic (Domain Knowledge Fix)
-    # Adjusts labels based on whether Z is Positive (Bullish) or Negative (Bearish)
+    # 2. Dynamic Text Logic
     breakout_label = "🟠 BREAKOUT (Up)" if direction == "UP" else "🟠 WATERFALL (Crash)"
     exhaustion_label = "🔴 TOP REVERSAL" if direction == "UP" else "🟢 BOTTOM BOUNCE"
     
@@ -111,6 +110,35 @@ def calculate_metrics(df):
         vol_avg = volumes.tail(20).median()
         vol_ratio = (current_volume / vol_avg) if vol_avg > 0 else 1.0
 
-        # RSI
+        # RSI Calculation (Split for Syntax Safety)
         delta = prices.diff()
-        gain = (delta
+        
+        # We use .copy() to ensure we aren't working on a slice view
+        gain = delta.where(delta > 0, 0)
+        loss = -delta.where(delta < 0, 0)
+        
+        avg_gain = gain.rolling(14).mean()
+        avg_loss = loss.rolling(14).mean()
+        
+        if len(avg_loss) > 0 and pd.notna(avg_loss.iloc[-1]):
+            last_loss = avg_loss.iloc[-1]
+            last_gain = avg_gain.iloc[-1]
+            if last_loss == 0: 
+                rsi = 100
+            else:
+                rs = last_gain / last_loss
+                rsi = 100 - (100 / (1 + rs))
+        else: 
+            rsi = 50
+
+        return {"price": current_price, "mu": mu, "z": z_score, "p": p_value, "vol": vol_ratio, "rsi": rsi, "valid": True}
+    except Exception: return {"valid": False}
+
+# --- UI RENDERER ---
+def main():
+    st.title("🛡️ Quant Scanner: Decision Matrix")
+    st.error("**LEGAL DISCLAIMER:** For Educational Purposes Only. Not financial advice.")
+    
+    with st.sidebar:
+        ticker = st.text_input("Ticker Symbol", "MU").upper()
+        run_btn = st.button("Run Analysis", type="primary")
