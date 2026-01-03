@@ -1,6 +1,8 @@
 streamlit
-yfinance
+yfinance>=0.2.52
 pandas
 numpy
 plotly
 scipy
+tenacity
+curl-cffi

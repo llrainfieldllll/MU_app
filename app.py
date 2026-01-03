@@ -5,7 +5,6 @@ import numpy as np
 import plotly.graph_objects as go
 from scipy.stats import norm
 from tenacity import retry, stop_after_attempt, wait_fixed
-import requests
 import logging
 
 # --- CONFIGURATION ---
@@ -18,31 +17,26 @@ logger = logging.getLogger(__name__)
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 def fetch_market_data(ticker: str) -> pd.DataFrame:
     """
-    Fetches data using a spoofed browser session to avoid 
-    Yahoo Finance IP blocking (403/429 errors).
+    Fetches data using yfinance's internal advanced handling.
+    Requires 'curl-cffi' installed in requirements.txt to work on Cloud IPs.
     """
     try:
-        # 1. Create a "Spoofed" Session
-        session = requests.Session()
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        })
-
-        # 2. Use the session with yfinance
-        # Note: We use yf.Ticker(...).history() which is often more reliable with sessions than .download()
-        ticker_obj = yf.Ticker(ticker, session=session)
+        # REMOVED: Manual session creation (Option 1).
+        # NEW STRATEGY: Let yfinance detect 'curl-cffi' and handle the handshake.
+        
+        ticker_obj = yf.Ticker(ticker)
         data = ticker_obj.history(period="3mo", interval="1d")
         
-        # 3. Validation Checks
+        # Validation Checks
         if data.empty:
             logger.warning(f"No data returned for {ticker}")
             return pd.DataFrame()
 
-        # Handle Timezone Awareness (Remove it to prevent index issues)
+        # Handle Timezone Awareness
         if data.index.tz is not None:
             data.index = data.index.tz_localize(None)
 
-        if len(data) < 34: # Requirement for RSI(14) + MA(20)
+        if len(data) < 34: 
             logger.warning(f"Insufficient data points: {len(data)}")
             return pd.DataFrame()
 
@@ -52,14 +46,12 @@ def fetch_market_data(ticker: str) -> pd.DataFrame:
         logger.error(f"API Error: {e}")
         raise e
 
+# --- METRICS ENGINE (UNCHANGED) ---
 def calculate_metrics(df: pd.DataFrame):
     prices = df['Close']
     analysis_slice = prices.tail(20)
-    
-    # Logic: Last Close is "Current"
     current_price = float(analysis_slice.iloc[-1])
 
-    # Z-Score Engine
     mu = analysis_slice.mean()
     sigma = analysis_slice.std()
     
@@ -70,7 +62,6 @@ def calculate_metrics(df: pd.DataFrame):
         
     p_value = 2 * (1 - norm.cdf(abs(z_score)))
 
-    # RSI Engine
     delta = prices.diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -94,7 +85,7 @@ def calculate_metrics(df: pd.DataFrame):
 
 # --- MAIN UI ---
 def main():
-    st.title("🛡️ Quant Auditor: Anti-Block Edition")
+    st.title("🛡️ Quant Auditor: Cloud Edition")
     
     with st.sidebar:
         st.header("Settings")
@@ -102,13 +93,13 @@ def main():
         run_btn = st.button("Run Audit", type="primary")
 
     if run_btn:
-        with st.spinner(f"Connecting to market data for {ticker}..."):
+        with st.spinner(f"Securely fetching data for {ticker}..."):
             try:
                 # 1. Fetch
                 data = fetch_market_data(ticker)
                 
                 if data.empty:
-                    st.error(f"❌ Failed to retrieve data for {ticker}. The spoofing attempt may have been detected or the ticker is invalid.")
+                    st.error(f"❌ Failed to retrieve data for {ticker}. The API may be blocking cloud traffic.")
                     st.stop()
 
                 # 2. Calculate
@@ -141,7 +132,6 @@ def main():
                 z = m['z_score']
                 fig.add_vline(x=z, line_width=3, line_color="#FF4B4B" if abs(z) > 2 else "#00FF00")
                 
-                # Tail Shading
                 fill_x = x[x >= z] if z > 0 else x[x <= z]
                 fill_y = y[x >= z] if z > 0 else y[x <= z]
                 fig.add_trace(go.Scatter(x=fill_x, y=fill_y, fill='tozeroy', fillcolor='rgba(255, 75, 75, 0.4)'))
