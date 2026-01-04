@@ -1,7 +1,7 @@
 import streamlit as st
 
 # --- 1. CONFIGURATION (Line 1) ---
-st.set_page_config(page_title="Quant Scanner v3.8", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Quant Scanner v4.0", layout="wide", page_icon="🛡️")
 
 # --- 2. IMPORTS ---
 try:
@@ -22,7 +22,7 @@ st.markdown("""
 <style>
     /* Table Styling */
     .matrix-table { width: 100%; border-collapse: collapse; font-family: 'Roboto Mono', monospace; font-size: 14px; margin-bottom: 20px; }
-    .matrix-table th { background-color: #000000; color: #FFFFFF; border-bottom: 3px solid #444; padding: 12px; text-align: left; }
+    .matrix-table th { background-color: #000000; color: #FFFFFF; border-bottom: 3px solid #444; padding: 12px; text-align: left; cursor: help; }
     .matrix-table td { padding: 12px; border-bottom: 1px solid #ddd; color: #000; font-weight: 500; }
     
     /* Signal Rows */
@@ -98,7 +98,7 @@ def calculate_metrics(df):
         closes = df['Close']
         window = 20
         curr = closes.iloc[-1]
-        last_date = df.index[-1] # Capture Date
+        last_date = df.index[-1]
         
         mu = closes.rolling(window).mean().iloc[-1]
         sigma = closes.rolling(window).std().iloc[-1]
@@ -145,7 +145,7 @@ def fetch_data(ticker):
 
 # --- 6. MAIN UI ---
 def main():
-    st.title("🛡️ Quant Scanner v3.8")
+    st.title("🛡️ Quant Scanner v4.0")
     
     with st.sidebar:
         raw_ticker = st.text_input("Ticker Symbol", "MU")
@@ -183,29 +183,48 @@ def main():
             
             c1, c2, c3, c4, c5 = st.columns(5)
             
-            # 1. Price with Date Label
-            c1.metric("Price", f"${m['price']:.2f}")
+            # TOOLTIPS ADDED HERE (The 'help' parameter)
+            c1.metric("Price", f"${m['price']:.2f}", help="Current Market Price. Data may be 15min delayed.")
             c1.caption(f"📅 Data: {m['date'].strftime('%Y-%m-%d')}")
             
-            c2.metric("Z-Score", f"{m['z']:.2f}σ", delta="Extreme" if z_abs>2 else "Normal", delta_color="inverse")
-            c3.metric("Volume", f"{m['vol']:.1f}x")
+            c2.metric("Z-Score", f"{m['z']:.2f}σ", 
+                delta="Extreme" if z_abs>2 else "Normal", delta_color="inverse",
+                help="DISTANC FROM AVERAGE.\n• 0.0 - 1.0: Noise (Ignore)\n• > 2.0: Anomaly/Breakout (Pay Attention)\n• > 3.0: Extreme Event")
+            
+            c3.metric("Volume", f"{m['vol']:.1f}x", 
+                help="ACTIVITY LEVEL.\n• 1.0x: Average activity.\n• > 1.2x: High Buying/Selling pressure (Conviction).\n• < 0.8x: Low interest (Apathy).")
             
             adx_label = f"{m['adx']:.0f}"
-            c4.metric("ADX", adx_label, delta="Trending" if m['adx']>25 else "Choppy", delta_color="normal" if m['adx']>25 else "off")
-            c5.metric("RSI", f"{m['rsi']:.0f}")
+            c4.metric("ADX", adx_label, 
+                delta="Trending" if m['adx']>25 else "Choppy", delta_color="normal" if m['adx']>25 else "off",
+                help="TREND STRENGTH (Lagging).\n• < 20: Sleep/Chop (No trend).\n• > 25: Strong Trend.\n• NOTE: We IGNORE this for sudden Breakouts.")
+            
+            c5.metric("RSI", f"{m['rsi']:.0f}",
+                help="MOMENTUM.\n• > 70: Overbought (Expensive).\n• < 30: Oversold (Cheap).\n• 50: Neutral.")
             
             st.divider()
             
-            # --- MATRIX ---
+            # --- MATRIX WITH HOVER TOOLTIPS ---
+            # Added 'title' attributes to headers for hover explanations
             rows = [
-                {"id": "breakout", "cond": "High Momentum", "z": "> 2.0 σ", "vol": "> 1.2x", "adx": "Any", "verdict": "🚀 BREAKOUT"},
-                {"id": "exhaustion", "cond": "Exhaustion", "z": "> 2.0 σ", "vol": "< 0.8x", "adx": "Any", "verdict": "🛑 REVERSAL"},
-                {"id": "anomaly", "cond": "Stat Outlier", "z": "> 2.0 σ", "vol": "Normal", "adx": "Any", "verdict": "⚠️ ANOMALY"},
-                {"id": "trend", "cond": "Trending", "z": "1.0 - 2.0 σ", "vol": "Normal", "adx": "> 25", "verdict": "🌊 RIDE TREND"},
-                {"id": "sleep", "cond": "Normal / Chop", "z": "Any", "vol": "Any", "adx": "< 20", "verdict": "😴 SLEEP"},
+                {"id": "breakout", "cond": "High Momentum", "z": "> 2.0 σ", "vol": "> 1.2x", "adx": "--", "verdict": "🚀 BREAKOUT"},
+                {"id": "exhaustion", "cond": "Exhaustion", "z": "> 2.0 σ", "vol": "< 0.8x", "adx": "--", "verdict": "🛑 REVERSAL"},
+                {"id": "anomaly", "cond": "Stat Outlier", "z": "> 2.0 σ", "vol": "0.8x - 1.2x", "adx": "--", "verdict": "⚠️ ANOMALY"},
+                {"id": "trend", "cond": "Trending", "z": "1.0 - 2.0 σ", "vol": "0.8x - 1.2x", "adx": "> 25", "verdict": "🌊 RIDE TREND"},
+                {"id": "sleep", "cond": "Normal / Chop", "z": "Any", "vol": "--", "adx": "< 20", "verdict": "😴 SLEEP"},
             ]
             
-            html = ['<table class="matrix-table"><tr><th>Condition</th><th>Z-Score</th><th>Volume</th><th>ADX</th><th>Verdict</th></tr>']
+            html = [
+                '<table class="matrix-table">',
+                '<tr>',
+                '<th title="The specific market scenario we are looking for.">Condition ⓘ</th>',
+                '<th title="Z-Score: Distance from 20-Day Average. >2.0 is an anomaly.">Z-Score ⓘ</th>',
+                '<th title="Volume Ratio: Current Vol vs Average. >1.2x is conviction.">Volume ⓘ</th>',
+                '<th title="ADX: Trend Strength. We ignore it for Breakouts.">ADX ⓘ</th>',
+                '<th title="Dr. Vol\'s Recommendation based on logic.">Verdict ⓘ</th>',
+                '</tr>'
+            ]
+            
             for row in rows:
                 if row['id'] == state:
                     css_class = f"signal-{row['id']}"
