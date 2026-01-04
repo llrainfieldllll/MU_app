@@ -1,7 +1,7 @@
 import streamlit as st
 
 # --- 1. CONFIGURATION (Line 1) ---
-st.set_page_config(page_title="Quant Scanner v4.0", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Quant Scanner v4.1", layout="wide", page_icon="🛡️")
 
 # --- 2. IMPORTS ---
 try:
@@ -40,6 +40,9 @@ st.markdown("""
     
     /* Date Caption */
     .date-caption { font-size: 12px; color: #666; font-style: italic; margin-top: -15px; }
+    
+    /* Context Badge */
+    .regime-badge { padding: 10px; border-radius: 5px; font-weight: bold; margin-bottom: 15px; text-align: center; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -93,32 +96,49 @@ def calculate_adx_safe(df, period=14):
 def calculate_metrics(df):
     try:
         df = df.dropna()
-        if len(df) < 50: return None
+        if len(df) < 200: return None # Need 200 days for SMA
         
         closes = df['Close']
         window = 20
         curr = closes.iloc[-1]
         last_date = df.index[-1]
         
+        # 1. Z-Score & P-Value
         mu = closes.rolling(window).mean().iloc[-1]
         sigma = closes.rolling(window).std().iloc[-1]
         z = (curr - mu) / sigma if sigma > 0 else 0
         p = (1 - t.cdf(abs(z), df=5)) * 2
         
+        # 2. Volume
         med_vol = df['Volume'].rolling(window).median().iloc[-1]
         vol_ratio = (df['Volume'].iloc[-1] / med_vol) if med_vol > 0 else 1.0
         
+        # 3. RSI
         delta = closes.diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rs = gain / loss.replace(0, 1)
         rsi = 100 - (100 / (1 + rs)).iloc[-1]
         
+        # 4. ADX
         adx = calculate_adx_safe(df)
+        
+        # 5. MACRO CONTEXT (SMA 50/200)
+        sma50 = closes.rolling(50).mean().iloc[-1]
+        sma200 = closes.rolling(200).mean().iloc[-1]
+        
+        regime = "NEUTRAL"
+        if curr > sma200:
+            regime = "BULL"
+        elif curr < sma200 and curr > sma50:
+            regime = "RECOVERY"
+        else:
+            regime = "BEAR"
         
         return {
             "price": curr, "z": z, "p": p, "vol": vol_ratio, 
-            "rsi": rsi, "adx": adx, "mu": mu, "date": last_date
+            "rsi": rsi, "adx": adx, "mu": mu, "date": last_date,
+            "regime": regime, "sma200": sma200
         }
     except:
         return None
@@ -128,6 +148,7 @@ def calculate_metrics(df):
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 def fetch_data(ticker):
     try:
+        # Fetch 2y to ensure 200 SMA has data
         df = yf.download(ticker, period="2y", interval="1d", progress=False, threads=False)
         if df.empty: return pd.DataFrame()
         
@@ -145,7 +166,7 @@ def fetch_data(ticker):
 
 # --- 6. MAIN UI ---
 def main():
-    st.title("🛡️ Quant Scanner v4.0")
+    st.title("🛡️ Quant Scanner v4.1")
     
     with st.sidebar:
         raw_ticker = st.text_input("Ticker Symbol", "MU")
@@ -162,7 +183,7 @@ def main():
             df = fetch_data(target)
             if df.empty: st.error("Data Fetch Error"); return
             m = calculate_metrics(df)
-            if not m: st.error("Insufficient Data"); return
+            if not m: st.error("Insufficient Data (Need >200 days)"); return
             
             # --- LOGIC ---
             z_abs = abs(m['z'])
@@ -177,35 +198,38 @@ def main():
             elif adx < 20: state = "sleep"
             elif 1.0 <= z_abs < 2.0 and adx > 25: state = "trend"
             
-            # --- METRICS & DATE LABEL ---
-            if z_abs > 2.0:
-                st.error(f"🚨 FAT TAIL EVENT: {m['z']:.2f}σ")
-            
+            # --- TOP BADGE: MARKET REGIME ---
+            regime = m['regime']
+            if regime == "BULL":
+                st.success(f"🟢 **MARKET CONTEXT: BULL REGIME** (Price > 200 SMA). Safe for Breakouts.")
+            elif regime == "RECOVERY":
+                st.warning(f"🟡 **MARKET CONTEXT: RECOVERY** (Price > 50 SMA). Tread carefully.")
+            else:
+                st.error(f"🔴 **MARKET CONTEXT: BEAR REGIME** (Price < 200 SMA). Favor Reversals/Shorts.")
+
+            # --- METRICS ---
             c1, c2, c3, c4, c5 = st.columns(5)
             
-            # TOOLTIPS ADDED HERE (The 'help' parameter)
-            c1.metric("Price", f"${m['price']:.2f}", help="Current Market Price. Data may be 15min delayed.")
-            c1.caption(f"📅 Data: {m['date'].strftime('%Y-%m-%d')}")
+            c1.metric("Price", f"${m['price']:.2f}", help="Current Market Price.")
+            c1.caption(f"📅 {m['date'].strftime('%Y-%m-%d')}")
             
             c2.metric("Z-Score", f"{m['z']:.2f}σ", 
                 delta="Extreme" if z_abs>2 else "Normal", delta_color="inverse",
-                help="DISTANC FROM AVERAGE.\n• 0.0 - 1.0: Noise (Ignore)\n• > 2.0: Anomaly/Breakout (Pay Attention)\n• > 3.0: Extreme Event")
+                help="DISTANC FROM AVERAGE.\n• > 2.0: Anomaly/Breakout\n• 0-1.0: Noise")
             
             c3.metric("Volume", f"{m['vol']:.1f}x", 
-                help="ACTIVITY LEVEL.\n• 1.0x: Average activity.\n• > 1.2x: High Buying/Selling pressure (Conviction).\n• < 0.8x: Low interest (Apathy).")
+                help="ACTIVITY.\n• > 1.2x: Conviction\n• < 0.8x: Apathy")
             
-            adx_label = f"{m['adx']:.0f}"
-            c4.metric("ADX", adx_label, 
+            c4.metric("ADX", f"{m['adx']:.0f}", 
                 delta="Trending" if m['adx']>25 else "Choppy", delta_color="normal" if m['adx']>25 else "off",
-                help="TREND STRENGTH (Lagging).\n• < 20: Sleep/Chop (No trend).\n• > 25: Strong Trend.\n• NOTE: We IGNORE this for sudden Breakouts.")
+                help="TREND STRENGTH.\n• > 25: Strong\n• < 20: Sleep\n• (Ignored for Breakouts)")
             
             c5.metric("RSI", f"{m['rsi']:.0f}",
-                help="MOMENTUM.\n• > 70: Overbought (Expensive).\n• < 30: Oversold (Cheap).\n• 50: Neutral.")
+                help="MOMENTUM.\n• > 70: Overbought\n• < 30: Oversold")
             
             st.divider()
             
-            # --- MATRIX WITH HOVER TOOLTIPS ---
-            # Added 'title' attributes to headers for hover explanations
+            # --- MATRIX ---
             rows = [
                 {"id": "breakout", "cond": "High Momentum", "z": "> 2.0 σ", "vol": "> 1.2x", "adx": "--", "verdict": "🚀 BREAKOUT"},
                 {"id": "exhaustion", "cond": "Exhaustion", "z": "> 2.0 σ", "vol": "< 0.8x", "adx": "--", "verdict": "🛑 REVERSAL"},
@@ -217,11 +241,11 @@ def main():
             html = [
                 '<table class="matrix-table">',
                 '<tr>',
-                '<th title="The specific market scenario we are looking for.">Condition ⓘ</th>',
-                '<th title="Z-Score: Distance from 20-Day Average. >2.0 is an anomaly.">Z-Score ⓘ</th>',
-                '<th title="Volume Ratio: Current Vol vs Average. >1.2x is conviction.">Volume ⓘ</th>',
-                '<th title="ADX: Trend Strength. We ignore it for Breakouts.">ADX ⓘ</th>',
-                '<th title="Dr. Vol\'s Recommendation based on logic.">Verdict ⓘ</th>',
+                '<th title="Market Condition">Condition ⓘ</th>',
+                '<th title="Z-Score">Z-Score ⓘ</th>',
+                '<th title="Volume Ratio">Volume ⓘ</th>',
+                '<th title="ADX Strength">ADX ⓘ</th>',
+                '<th title="Verdict">Verdict ⓘ</th>',
                 '</tr>'
             ]
             
@@ -242,10 +266,11 @@ def main():
             gap = m['price'] - m['mu']
             direction = "above" if m['z'] > 0 else "below"
             st.markdown("### 📝 Statistical Observations")
+            
             obs_text = f"""
+            * **Macro Context:** The stock is in a **{regime}** regime. (Price vs 200 SMA: ${m['sma200']:.2f}).
             * **Rarity:** There is only a **{m['p']*100:.2f}% probability** of price being this far {direction} the average.
             * **Mean Reversion:** The 20-Day SMA is **${m['mu']:.2f}**. Price is **${abs(gap):.2f}** {direction} this mean.
-            * **Momentum:** RSI is **{m['rsi']:.1f}**. (Values >70 are Overbought, <30 are Oversold).
             """
             if z_abs > 2.0: st.warning(obs_text)
             else: st.info(obs_text)
