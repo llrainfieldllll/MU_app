@@ -7,10 +7,10 @@ from tenacity import retry, stop_after_attempt, wait_fixed
 from curl_cffi import requests as crequests # The "Nuclear" Browser Spoofer
 import re
 from datetime import datetime
-import yfinance as yf # Imported as requested (keeps the dependency valid)
+import yfinance as yf # Imported to satisfy requirements
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Quant Scanner v4.3", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Quant Scanner v4.4", layout="wide", page_icon="🛡️")
 
 # --- 2. HIGH-CONTRAST CSS ---
 st.markdown("""
@@ -33,12 +33,13 @@ st.markdown("""
     div[data-testid="stMetricValue"] { color: #000 !important; font-weight: 700 !important; }
     div[data-testid="stMetricLabel"] { color: #444 !important; font-weight: 600 !important; }
     
-    /* Shockwave Alert */
-    .shock-alert { padding: 15px; border-radius: 8px; font-weight: bold; margin-bottom: 20px; text-align: center; border: 2px solid; }
+    /* Shockwave Alerts */
+    .shock-rocket { padding: 15px; border-radius: 8px; font-weight: bold; margin-bottom: 10px; text-align: center; border: 2px solid #155724; background-color: #d4edda; color: #155724; }
+    .shock-crash { padding: 15px; border-radius: 8px; font-weight: bold; margin-bottom: 10px; text-align: center; border: 2px solid #721c24; background-color: #f8d7da; color: #721c24; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. THE "NUCLEAR" DATA ENGINE (Yahoo Finance Direct) ---
+# --- 3. THE "NUCLEAR" DATA ENGINE ---
 @st.cache_data(ttl=300, show_spinner=False)
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 def fetch_data_nuclear(ticker):
@@ -47,21 +48,15 @@ def fetch_data_nuclear(ticker):
     Uses browser spoofing (Chrome 110) to bypass the 'Insufficient Data' block.
     """
     try:
-        # 1. Yahoo Raw JSON Endpoint
         url = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}?range=2y&interval=1d"
-        
-        # 2. Impersonate Chrome 110 (Crucial for bypass)
         r = crequests.get(url, impersonate="chrome110", timeout=10)
         
-        # 3. Handle Block/Error
         if r.status_code != 200: return pd.DataFrame()
 
-        # 4. Parse Complex JSON
         data = r.json()
         result = data['chart']['result'][0]
         indicators = result['indicators']['quote'][0]
         
-        # Extract columns safely
         timestamps = result['timestamp']
         opens = indicators.get('open', [])
         highs = indicators.get('high', [])
@@ -69,16 +64,13 @@ def fetch_data_nuclear(ticker):
         closes = indicators.get('close', [])
         volumes = indicators.get('volume', [])
         
-        # 5. Build DataFrame
         df = pd.DataFrame({
             'Open': opens, 'High': highs, 'Low': lows, 
             'Close': closes, 'Volume': volumes, 'Timestamp': timestamps
         })
         
-        # 6. Clean and Index
         df['Date'] = pd.to_datetime(df['Timestamp'], unit='s')
-        # FIX: Normalize timezone to prevent issues
-        df['Date'] = df['Date'].dt.tz_localize(None) 
+        df['Date'] = df['Date'].dt.tz_localize(None) # Fix Timezone Issues
         df.set_index('Date', inplace=True)
         df = df.dropna()
         
@@ -115,7 +107,6 @@ def calculate_adx_safe(df, period=14):
         neg_di = 100 * (neg_s / tr_s)
         
         denom = pos_di + neg_di
-        # FIX: Avoid Division by Zero
         denom = denom.replace(0, np.nan).ffill()
         
         dx = 100 * abs(pos_di - neg_di) / denom
@@ -124,18 +115,37 @@ def calculate_adx_safe(df, period=14):
         return adx.iloc[-1] if not np.isnan(adx.iloc[-1]) else 0.0
     except: return 0.0
 
-def check_shockwave(closes):
-    """Checks for +/- 10% move in last 5 trading days."""
+def check_shockwaves(closes):
+    """
+    Checks for TWO types of shocks:
+    1. Daily Flash (Today vs Yesterday)
+    2. Weekly Trend (Today vs 5 Days Ago)
+    Returns a list of alert HTML strings.
+    """
+    alerts = []
     try:
-        if len(closes) < 6: return None
-        curr = closes.iloc[-1]
-        past = closes.iloc[-6] # 5 trading days ago (approx 1 week)
-        pct = (curr - past) / past
+        if len(closes) < 6: return []
         
-        if pct >= 0.10: return ("🚀 ROCKET", pct, "#d4edda", "#155724") # Green
-        if pct <= -0.10: return ("🩸 CRASHING", pct, "#f8d7da", "#721c24") # Red
-        return None
-    except: return None
+        curr = closes.iloc[-1]
+        prev = closes.iloc[-2]     # Yesterday
+        week_ago = closes.iloc[-6] # 5 Days Ago
+        
+        # 1. DAILY CHECK (The "Flash" Check)
+        daily_pct = (curr - prev) / prev
+        if daily_pct <= -0.10:
+            alerts.append(f'<div class="shock-crash">🩸 FLASH CRASH: {daily_pct:.1%} TODAY</div>')
+        elif daily_pct >= 0.10:
+            alerts.append(f'<div class="shock-rocket">⚡ MOONSHOT: +{daily_pct:.1%} TODAY</div>')
+            
+        # 2. WEEKLY CHECK (The "Trend" Check)
+        weekly_pct = (curr - week_ago) / week_ago
+        if weekly_pct >= 0.15: # Raised threshold slightly to filter noise
+            alerts.append(f'<div class="shock-rocket">🚀 ROCKET TREND: +{weekly_pct:.1%} in 7 Days</div>')
+        elif weekly_pct <= -0.15:
+            alerts.append(f'<div class="shock-crash">📉 BROKEN TREND: {weekly_pct:.1%} in 7 Days</div>')
+            
+        return alerts
+    except: return []
 
 def calculate_metrics(df):
     try:
@@ -183,7 +193,7 @@ def calculate_metrics(df):
 
 # --- 5. MAIN UI ---
 def main():
-    st.title("🛡️ Quant Scanner v4.3")
+    st.title("🛡️ Quant Scanner v4.4")
     
     with st.sidebar:
         raw_ticker = st.text_input("Ticker Symbol", "ASTS")
@@ -198,10 +208,8 @@ def main():
         target = st.session_state.get('ticker')
         
         with st.spinner(f"Establishing Secure Connection to {target}..."):
-            # Use Nuclear Fetcher (Yahoo Direct)
             df = fetch_data_nuclear(target)
             
-            # Validation
             if df.empty:
                 st.error("🛑 **Connection Blocked:** Yahoo refused the data connection. Try again in 5 mins.")
                 return
@@ -224,15 +232,11 @@ def main():
             elif adx < 20: state = "sleep"
             elif 1.0 <= z_abs < 2.0 and adx > 25: state = "trend"
             
-            # --- ALERT: SHOCKWAVE (The New Flag) ---
-            shock = check_shockwave(df['Close'])
-            if shock:
-                label, pct, bg_col, txt_col = shock
-                st.markdown(f"""
-                <div class="shock-alert" style="background-color: {bg_col}; color: {txt_col}; border-color: {txt_col};">
-                    {label}: {pct:+.1%} Move in 7 Days
-                </div>
-                """, unsafe_allow_html=True)
+            # --- ALERTS: SHOCKWAVE (FIXED) ---
+            # Now displays ALL active alerts (Daily AND Weekly)
+            alerts = check_shockwaves(df['Close'])
+            for alert_html in alerts:
+                st.markdown(alert_html, unsafe_allow_html=True)
 
             # --- CONTEXT BADGE ---
             regime = m['regime']
