@@ -87,7 +87,7 @@ def get_signal(z, rank, vol):
 
 # --- MAIN UI ---
 def main():
-    st.title("⚖️ Quant Scanner v9.1 (Compliance Ready)")
+    st.title("⚖️ Quant Scanner v9.1")
     
     # MANDATORY DISCLAIMER (Prominent Placement)
     st.info("⚠️ **DISCLAIMER:** This application is for **educational and informational purposes only**. "
