@@ -2,310 +2,235 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from scipy.stats import t
-from tenacity import retry, stop_after_attempt, wait_fixed
-from curl_cffi import requests as crequests # The "Nuclear" Browser Spoofer
-import re
+import plotly.express as px
+import yfinance as yf
+from curl_cffi import requests as crequests
 from datetime import datetime
-import yfinance as yf # Imported to satisfy requirements
+import pytz
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Quant Scanner v4.4", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Quant Scanner v5.0 (Hybrid)", layout="wide", page_icon="🛡️")
 
-# --- 2. HIGH-CONTRAST CSS ---
+# --- 2. CSS & STYLING ---
 st.markdown("""
 <style>
-    /* Table Styling */
-    .matrix-table { width: 100%; border-collapse: collapse; font-family: 'Roboto Mono', monospace; font-size: 14px; margin-bottom: 20px; }
-    .matrix-table th { background-color: #000000; color: #FFFFFF; border-bottom: 3px solid #444; padding: 12px; text-align: left; cursor: help; }
-    .matrix-table td { padding: 12px; border-bottom: 1px solid #ddd; color: #000; font-weight: 500; }
+    .matrix-table { width: 100%; border-collapse: collapse; font-family: 'Roboto Mono', monospace; font-size: 14px; }
+    .matrix-table th { background-color: #000; color: #FFF; padding: 10px; text-align: left; }
+    .matrix-table td { padding: 10px; border-bottom: 1px solid #ddd; color: #000; font-weight: 500; }
     
-    /* Signal Rows */
-    .signal-breakout { background-color: #e8f5e9; border-left: 6px solid #2e7d32; color: #1b5e20; } 
-    .signal-exhaustion { background-color: #ffebee; border-left: 6px solid #c62828; color: #b71c1c; } 
-    .signal-anomaly { background-color: #fff8e1; border-left: 6px solid #fbc02d; color: #f57f17; } 
-    .signal-trend { background-color: #e3f2fd; border-left: 6px solid #1565c0; color: #0d47a1; } 
-    .signal-sleep { background-color: #f5f5f5; border-left: 6px solid #9e9e9e; color: #616161; }
+    /* State Colors */
+    .state-anomaly { background-color: #fff3cd; border-left: 5px solid #ffc107; color: #856404; }
+    .state-breakout { background-color: #d4edda; border-left: 5px solid #28a745; color: #155724; }
+    .state-exhaustion { background-color: #f8d7da; border-left: 5px solid #dc3545; color: #721c24; }
+    .state-trend { background-color: #d1ecf1; border-left: 5px solid #17a2b8; color: #0c5460; }
+    .state-neutral { background-color: #f8f9fa; border-left: 5px solid #6c757d; color: #343a40; }
+    .plain { background-color: white; color: #ccc; }
     
-    .plain-row { background-color: #ffffff; color: #999; }
-    
-    /* Metrics */
-    div[data-testid="stMetricValue"] { color: #000 !important; font-weight: 700 !important; }
-    div[data-testid="stMetricLabel"] { color: #444 !important; font-weight: 600 !important; }
-    
-    /* Shockwave Alerts */
-    .shock-rocket { padding: 15px; border-radius: 8px; font-weight: bold; margin-bottom: 10px; text-align: center; border: 2px solid #155724; background-color: #d4edda; color: #155724; }
-    .shock-crash { padding: 15px; border-radius: 8px; font-weight: bold; margin-bottom: 10px; text-align: center; border: 2px solid #721c24; background-color: #f8d7da; color: #721c24; }
+    /* Alerts */
+    .alert-box { padding: 10px; margin-bottom: 10px; border-radius: 5px; font-weight: bold; border: 1px solid; }
+    .alert-up { background-color: #e6fffa; border-color: #2c7a7b; color: #2c7a7b; }
+    .alert-down { background-color: #fff5f5; border-color: #c53030; color: #c53030; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. THE "NUCLEAR" DATA ENGINE ---
-@st.cache_data(ttl=300, show_spinner=False)
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
-def fetch_data_nuclear(ticker):
+# --- 3. THE "STEALTH HYBRID" ENGINE ---
+def fetch_data_hybrid(ticker):
     """
-    Fetches full OHLCV data directly from Yahoo Finance API.
-    Uses browser spoofing (Chrome 110) to bypass the 'Insufficient Data' block.
+    Attempts to fetch data using yfinance first (cleaner).
+    Fails over to curl_cffi (Chrome 110 impersonation) if blocked.
     """
+    # 1. Try Official API (yfinance)
+    try:
+        df = yf.download(ticker, period="2y", interval="1d", progress=False)
+        if not df.empty and len(df) > 100:
+            if isinstance(df.columns, pd.MultiIndex):
+                return df.xs('Close', axis=1, level=1)
+            return df['Close']
+    except:
+        pass # Fail silently to backup
+        
+    # 2. Try Nuclear Option (curl_cffi)
     try:
         url = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}?range=2y&interval=1d"
-        r = crequests.get(url, impersonate="chrome110", timeout=10)
+        r = crequests.get(url, impersonate="chrome110", timeout=8)
         
-        if r.status_code != 200: return pd.DataFrame()
-
-        data = r.json()
-        result = data['chart']['result'][0]
-        indicators = result['indicators']['quote'][0]
-        
-        timestamps = result['timestamp']
-        opens = indicators.get('open', [])
-        highs = indicators.get('high', [])
-        lows = indicators.get('low', [])
-        closes = indicators.get('close', [])
-        volumes = indicators.get('volume', [])
-        
-        df = pd.DataFrame({
-            'Open': opens, 'High': highs, 'Low': lows, 
-            'Close': closes, 'Volume': volumes, 'Timestamp': timestamps
-        })
-        
-        df['Date'] = pd.to_datetime(df['Timestamp'], unit='s')
-        df['Date'] = df['Date'].dt.tz_localize(None) # Fix Timezone Issues
-        df.set_index('Date', inplace=True)
-        df = df.dropna()
-        
-        return df
-        
-    except Exception as e:
-        return pd.DataFrame()
-
-# --- 4. MATH ENGINE ---
-def calculate_adx_safe(df, period=14):
-    try:
-        if len(df) < period * 2: return 0.0
-        high, low, close = df['High'], df['Low'], df['Close']
-        
-        tr1 = high - low
-        tr2 = abs(high - close.shift(1))
-        tr3 = abs(low - close.shift(1))
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        
-        up = high - high.shift(1)
-        down = low.shift(1) - low
-        pos_dm = np.where((up > down) & (up > 0), up, 0.0)
-        neg_dm = np.where((down > up) & (down > 0), down, 0.0)
-        
-        pos_dm = pd.Series(pos_dm, index=df.index)
-        neg_dm = pd.Series(neg_dm, index=df.index)
-        
-        alpha = 1 / period
-        tr_s = tr.ewm(alpha=alpha, min_periods=1, adjust=False).mean()
-        pos_s = pos_dm.ewm(alpha=alpha, min_periods=1, adjust=False).mean()
-        neg_s = neg_dm.ewm(alpha=alpha, min_periods=1, adjust=False).mean()
-        
-        pos_di = 100 * (pos_s / tr_s)
-        neg_di = 100 * (neg_s / tr_s)
-        
-        denom = pos_di + neg_di
-        denom = denom.replace(0, np.nan).ffill()
-        
-        dx = 100 * abs(pos_di - neg_di) / denom
-        adx = dx.ewm(alpha=alpha, min_periods=1, adjust=False).mean()
-        
-        return adx.iloc[-1] if not np.isnan(adx.iloc[-1]) else 0.0
-    except: return 0.0
-
-def check_shockwaves(closes):
-    """
-    Checks for TWO types of shocks:
-    1. Daily Flash (Today vs Yesterday)
-    2. Weekly Trend (Today vs 5 Days Ago)
-    Returns a list of alert HTML strings.
-    """
-    alerts = []
-    try:
-        if len(closes) < 6: return []
-        
-        curr = closes.iloc[-1]
-        prev = closes.iloc[-2]     # Yesterday
-        week_ago = closes.iloc[-6] # 5 Days Ago
-        
-        # 1. DAILY CHECK (The "Flash" Check)
-        daily_pct = (curr - prev) / prev
-        if daily_pct <= -0.10:
-            alerts.append(f'<div class="shock-crash">🩸 FLASH CRASH: {daily_pct:.1%} TODAY</div>')
-        elif daily_pct >= 0.10:
-            alerts.append(f'<div class="shock-rocket">⚡ MOONSHOT: +{daily_pct:.1%} TODAY</div>')
+        if r.status_code == 200:
+            data = r.json()['chart']['result'][0]
+            closes = data['indicators']['quote'][0]['close']
+            timestamps = data['timestamp']
             
-        # 2. WEEKLY CHECK (The "Trend" Check)
-        weekly_pct = (curr - week_ago) / week_ago
-        if weekly_pct >= 0.15: # Raised threshold slightly to filter noise
-            alerts.append(f'<div class="shock-rocket">🚀 ROCKET TREND: +{weekly_pct:.1%} in 7 Days</div>')
-        elif weekly_pct <= -0.15:
-            alerts.append(f'<div class="shock-crash">📉 BROKEN TREND: {weekly_pct:.1%} in 7 Days</div>')
-            
-        return alerts
-    except: return []
+            df = pd.DataFrame({'Close': closes, 'Date': pd.to_datetime(timestamps, unit='s')})
+            # Clean up: set index and drop NaNs
+            return df.set_index('Date')['Close'].dropna()
+    except:
+        return None
+        
+    return None
 
-def calculate_metrics(df):
+# --- 4. MATH ENGINE (Refined) ---
+def calculate_metrics(closes):
     try:
-        if len(df) < 200: return None
-        closes = df['Close']
-        window = 20
-        curr = closes.iloc[-1]
-        last_date = df.index[-1]
+        if len(closes) < 200: return None
         
-        # Z-Score
-        mu = closes.rolling(window).mean().iloc[-1]
-        sigma = closes.rolling(window).std().iloc[-1]
-        z = (curr - mu) / sigma if sigma > 0 else 0
-        p = (1 - t.cdf(abs(z), df=5)) * 2
+        curr_price = float(closes.iloc[-1])
         
-        # Volume Ratio
-        med_vol = df['Volume'].rolling(window).median().iloc[-1]
-        vol_ratio = (df['Volume'].iloc[-1] / med_vol) if med_vol > 0 else 1.0
+        # 1. Z-Score (The Distance)
+        roll = closes.rolling(20)
+        mu = roll.mean().iloc[-1]
+        sigma = roll.std().iloc[-1]
         
-        # RSI
-        delta = closes.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rs = gain / loss.replace(0, 1)
-        rsi = 100 - (100 / (1 + rs)).iloc[-1]
+        # Avoid division by zero
+        if sigma == 0: sigma = 0.001
+        z_score = (curr_price - mu) / sigma
         
-        # ADX
-        adx = calculate_adx_safe(df)
+        # 2. Percentile Rank (The Rarity) - KEY FIX
+        # We look at the Z-Score history of the last 6 months (126 days)
+        past_z = (closes - closes.rolling(20).mean()) / closes.rolling(20).std()
+        recent_z_history = past_z.tail(126).dropna()
         
-        # Regime (SMA)
-        sma50 = closes.rolling(50).mean().iloc[-1]
-        sma200 = closes.rolling(200).mean().iloc[-1]
+        if not recent_z_history.empty:
+            # Logic: What % of days had a LOWER Z-score than today?
+            pct_rank = (recent_z_history < z_score).mean() * 100
+        else:
+            pct_rank = 50.0 # Default fallback
+        
+        # 3. Market Regime (The Trend)
+        # Using EMA for faster reaction (Red Team Fix)
+        ema50 = closes.ewm(span=50, adjust=False).mean().iloc[-1]
+        ema200 = closes.ewm(span=200, adjust=False).mean().iloc[-1]
         
         regime = "NEUTRAL"
-        if curr > sma200: regime = "BULL"
-        elif curr < sma200 and curr > sma50: regime = "RECOVERY"
-        else: regime = "BEAR"
-        
+        if curr_price > ema200:
+            regime = "BULL" if ema50 > ema200 else "RECOVERY"
+        else:
+            regime = "BEAR" if ema50 < ema200 else "WARNING"
+
+        # 4. Stop Loss (Risk Management)
+        stop_loss = curr_price - (3 * sigma)
+
         return {
-            "price": curr, "z": z, "p": p, "vol": vol_ratio, 
-            "rsi": rsi, "adx": adx, "mu": mu, "date": last_date,
-            "regime": regime, "sma200": sma200
+            "price": curr_price,
+            "z_score": z_score,
+            "pct_rank": pct_rank,
+            "regime": regime,
+            "mu": mu,
+            "prev_close": closes.iloc[-2],
+            "stop_loss": stop_loss
         }
-    except: return None
+    except Exception as e:
+        return None
 
-# --- 5. MAIN UI ---
-def main():
-    st.title("🛡️ Quant Scanner v4.4")
+def get_verdict(m):
+    z = m['z_score']
+    p = m['pct_rank']
+    r = m['regime']
     
-    with st.sidebar:
-        raw_ticker = st.text_input("Ticker Symbol", "ASTS")
-        if st.button("Run Analysis", type="primary"):
-            if raw_ticker and re.match(r"^[\w\-\.]+$", raw_ticker.strip()):
-                st.session_state.run = True
-                st.session_state.ticker = raw_ticker.upper().strip()
-            else:
-                st.error("Invalid Ticker")
-
-    if st.session_state.get('run'):
-        target = st.session_state.get('ticker')
+    # Logic combining Regime, Distance (Z), and Rarity (P)
+    
+    # EXTENSIONS (Overbought)
+    if z > 2.0 and p > 95: return "exhaustion", "🛑 EXTENDED (Risk)"
+    if z > 2.0: return "breakout", "🚀 BREAKOUT"
+    
+    # OVERSOLD (Dip Buying)
+    if z < -2.0:
+        if r == "BULL" and p < 5: return "anomaly", "⭐⭐⭐ PRIME BUY" # Confluence
+        if r == "BULL": return "trend", "⭐⭐ DIP WATCH"
+        if r == "BEAR": return "exhaustion", "⛔ FALLING KNIFE"
         
-        with st.spinner(f"Establishing Secure Connection to {target}..."):
-            df = fetch_data_nuclear(target)
-            
-            if df.empty:
-                st.error("🛑 **Connection Blocked:** Yahoo refused the data connection. Try again in 5 mins.")
-                return
-            
-            m = calculate_metrics(df)
-            if not m: 
-                st.error(f"⚠️ **Insufficient History:** {target} has less than 200 days of data.")
-                return
-            
-            # --- LOGIC ---
-            z_abs = abs(m['z'])
-            vol = m['vol']
-            adx = m['adx']
-            
-            state = "sleep"
-            if z_abs >= 3.0: state = "anomaly"
-            elif z_abs >= 2.0 and vol > 1.2: state = "breakout"
-            elif z_abs >= 2.0 and vol < 0.8: state = "exhaustion"
-            elif z_abs >= 2.0: state = "anomaly"
-            elif adx < 20: state = "sleep"
-            elif 1.0 <= z_abs < 2.0 and adx > 25: state = "trend"
-            
-            # --- ALERTS: SHOCKWAVE (FIXED) ---
-            # Now displays ALL active alerts (Daily AND Weekly)
-            alerts = check_shockwaves(df['Close'])
-            for alert_html in alerts:
-                st.markdown(alert_html, unsafe_allow_html=True)
+    # TRENDING
+    if 1.0 < z < 2.0 and r == "BULL": return "trend", "🌊 RIDE TREND"
+    if -2.0 < z < -1.0 and r == "BEAR": return "trend", "📉 DOWNTREND"
+    
+    return "neutral", "😴 CHOP"
 
-            # --- CONTEXT BADGE ---
-            regime = m['regime']
-            if regime == "BULL":
-                st.success(f"🟢 **MARKET CONTEXT: BULL REGIME** (Price > 200 SMA). Safe for Breakouts.")
-            elif regime == "RECOVERY":
-                st.warning(f"🟡 **MARKET CONTEXT: RECOVERY** (Price > 50 SMA). Tread carefully.")
-            else:
-                st.error(f"🔴 **MARKET CONTEXT: BEAR REGIME** (Price < 200 SMA). Favor Reversals/Shorts.")
+# --- 5. UI ---
+def main():
+    st.title("🛡️ Quant Scanner v5.0 (Red Teamed)")
+    
+    # Sidebar
+    ticker = st.sidebar.text_input("Ticker", "NVDA").upper()
+    run = st.sidebar.button("Run Analysis", type="primary")
+    
+    if run and ticker:
+        with st.spinner(f"Triangulating Data for {ticker}..."):
+            closes = fetch_data_hybrid(ticker)
+            
+            if closes is None or closes.empty:
+                st.error(f"Data Source Failure for {ticker}. Try again.")
+                return
 
-            # --- METRICS ---
+            m = calculate_metrics(closes)
+            if not m:
+                st.error("Insufficient historical data (Need 200+ days).")
+                return
+                
+            state_id, verdict_text = get_verdict(m)
+            
+            # --- HEADER METRICS ---
             c1, c2, c3, c4, c5 = st.columns(5)
-            
             c1.metric("Price", f"${m['price']:.2f}")
-            c1.caption(f"📅 {m['date'].strftime('%Y-%m-%d')}")
+            c2.metric("Regime", m['regime'], 
+                      delta="Safe" if m['regime']=="BULL" else "Danger", 
+                      delta_color="normal" if m['regime']=="BULL" else "inverse")
+            c3.metric("Z-Score", f"{m['z_score']:.2f}σ", help="Standard Deviations from 20-Day Mean")
             
-            c2.metric("Z-Score", f"{m['z']:.2f}σ", 
-                delta="Extreme" if z_abs>2 else "Normal", delta_color="inverse",
-                help="DISTANCE FROM AVERAGE.\n• > 2.0: Anomaly/Breakout")
+            # The Critical Metric: Percentile
+            rank_display = f"{m['pct_rank']:.0f}%"
+            c4.metric("Hist. Rank", rank_display, help="How rare is this price relative to the last 6 months?")
             
-            c3.metric("Volume", f"{m['vol']:.1f}x", 
-                help="ACTIVITY.\n• > 1.2x: Conviction\n• < 0.8x: Apathy")
-            
-            c4.metric("ADX", f"{m['adx']:.0f}", 
-                delta="Trending" if m['adx']>25 else "Choppy",
-                help="TREND STRENGTH.\n• > 25: Strong")
-            
-            c5.metric("RSI", f"{m['rsi']:.0f}",
-                help="MOMENTUM.\n• > 70: Overbought\n• < 30: Oversold")
-            
+            c5.metric("Stop Loss", f"${m['stop_loss']:.2f}", help="3 Sigma below price")
+
             st.divider()
             
-            # --- MATRIX ---
+            # --- ALERTS ---
+            daily_chg = (m['price'] - m['prev_close']) / m['prev_close']
+            if daily_chg > 0.05:
+                st.markdown(f'<div class="alert-box alert-up">⚡ HIGH VELOCITY: +{daily_chg:.1%} Today</div>', unsafe_allow_html=True)
+            elif daily_chg < -0.05:
+                st.markdown(f'<div class="alert-box alert-down">📉 HIGH VELOCITY: {daily_chg:.1%} Today</div>', unsafe_allow_html=True)
+
+            # --- THE MATRIX ---
             rows = [
-                {"id": "breakout", "cond": "High Momentum", "z": "> 2.0 σ", "vol": "> 1.2x", "adx": "--", "verdict": "🚀 BREAKOUT"},
-                {"id": "exhaustion", "cond": "Exhaustion", "z": "> 2.0 σ", "vol": "< 0.8x", "adx": "--", "verdict": "🛑 REVERSAL"},
-                {"id": "anomaly", "cond": "Stat Outlier", "z": "> 2.0 σ", "vol": "0.8x - 1.2x", "adx": "--", "verdict": "⚠️ ANOMALY"},
-                {"id": "trend", "cond": "Trending", "z": "1.0 - 2.0 σ", "vol": "0.8x - 1.2x", "adx": "> 25", "verdict": "🌊 RIDE TREND"},
-                {"id": "sleep", "cond": "Normal / Chop", "z": "Any", "vol": "--", "adx": "< 20", "verdict": "😴 SLEEP"},
+                {"id": "breakout", "cond": "Breakout", "z": "> 2.0", "p": "Any", "res": "🚀 BREAKOUT"},
+                {"id": "exhaustion", "cond": "Extension", "z": "> 2.0", "p": "> 95%", "res": "🛑 REVERSAL RISK"},
+                {"id": "anomaly", "cond": "Prime Oversold", "z": "< -2.0", "p": "< 5%", "res": "⭐⭐⭐ PRIME BUY"},
+                {"id": "trend", "cond": "Trend", "z": "1.0 to 2.0", "p": "Any", "res": "🌊 RIDE TREND"},
+                {"id": "neutral", "cond": "Noise", "z": "-1.0 to 1.0", "p": "20% - 80%", "res": "😴 WAIT"},
             ]
             
-            html = ['<table class="matrix-table"><tr><th>Condition ⓘ</th><th>Z-Score ⓘ</th><th>Volume ⓘ</th><th>ADX ⓘ</th><th>Verdict ⓘ</th></tr>']
+            html = ['<table class="matrix-table"><tr><th>Condition</th><th>Z-Score</th><th>Percentile (Rarity)</th><th>Verdict</th></tr>']
             for row in rows:
-                css = f"signal-{row['id']}" if row['id'] == state else "plain-row"
-                verdict = f"✅ {row['verdict']}" if row['id'] == state else row['verdict']
-                html.append(f'<tr class="{css}"><td>{row["cond"]}</td><td>{row["z"]}</td><td>{row["vol"]}</td><td>{row["adx"]}</td><td>{verdict}</td></tr>')
+                css = f"state-{row['id']}" if row['id'] == state_id else "plain"
+                res = f"✅ {row['res']}" if row['id'] == state_id else row['res']
+                html.append(f'<tr class="{css}"><td>{row["cond"]}</td><td>{row["z"]}</td><td>{row["p"]}</td><td>{res}</td></tr>')
             html.append('</table>')
             st.markdown("".join(html), unsafe_allow_html=True)
             
-            st.divider()
-            
-            # --- CONCLUSION ---
-            direction = "above" if m['z'] > 0 else "below"
-            st.markdown("### 📝 Statistical Observations")
-            st.info(f"""
-            * **Macro Context:** The stock is in a **{regime}** regime.
-            * **Rarity:** There is only a **{m['p']*100:.2f}% probability** of price being this far {direction} the average.
-            * **Mean Reversion:** The 20-Day SMA is **${m['mu']:.2f}**.
-            """)
-            
             # --- CHART ---
-            x = np.linspace(-4, 4, 1000)
-            y = t.pdf(x, df=5)
+            # Visualizing the Percentile Rank
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=x, y=y, line=dict(color='#000000', width=2)))
-            color = "#D50000" if z_abs >= 2 else "#00C853"
-            fig.add_vline(x=m['z'], line=dict(color=color, width=3, dash='dash'))
-            fig.add_annotation(x=m['z'], y=0.35, text=f"<b>YOU</b><br>{m['z']:.2f}σ", font=dict(color=color, size=14))
-            fig.update_layout(template="plotly_white", height=350, margin=dict(t=20, b=20), showlegend=False)
+            
+            # Histogram of past Z-scores
+            past_z = (closes - closes.rolling(20).mean()) / closes.rolling(20).std()
+            recent_z = past_z.tail(126).dropna()
+            
+            fig.add_trace(go.Histogram(
+                x=recent_z, nbinsx=30, name="6-Month History",
+                marker_color='#e0e0e0', opacity=0.7
+            ))
+            
+            # Current Z-Score Line
+            color = "red" if abs(m['z_score']) > 2 else "blue"
+            fig.add_vline(x=m['z_score'], line_width=3, line_color=color)
+            fig.add_annotation(x=m['z_score'], y=10, text=f"CURRENT<br>{m['z_score']:.2f}σ", 
+                               showarrow=False, yshift=20, font=dict(color=color, weight="bold"))
+            
+            fig.update_layout(
+                title="Is this Normal? (Current Z-Score vs. 6-Month History)",
+                template="plotly_white", height=300, 
+                xaxis_title="Z-Score", yaxis_title="Frequency (Days)",
+                bargap=0.1
+            )
             st.plotly_chart(fig, use_container_width=True)
 
 if __name__ == "__main__":
