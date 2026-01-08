@@ -6,7 +6,7 @@ from scipy.stats import percentileofscore, t
 from curl_cffi import requests as crequests
 
 # --- CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="Quant Scanner v21.3", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="Quant Scanner v21.4", page_icon="🛡️")
 
 # --- CUSTOM CSS ---
 st.markdown("""
@@ -36,7 +36,7 @@ st.markdown("""
 
 # --- SESSION STATE ---
 if 'data' not in st.session_state: st.session_state.data = None
-if 'analyzed_ticker' not in st.session_state: st.session_state.analyzed_ticker = ""
+if 'analyzed_ticker' not in st.session_state: st.session_state.analyzed_ticker = "MU" 
 
 # --- DATA ENGINE ---
 @st.cache_data(ttl=300)
@@ -60,8 +60,7 @@ def fetch_data(ticker):
         closes = quote.get('close')
         if not timestamps or not closes: return None, "Empty dataset"
         
-        # --- CRASH PROTECTION (Senior Dev Fix) ---
-        # Fallback to 'close' if 'high' data is missing or mismatched length
+        # --- CRASH PROTECTION ---
         highs = quote.get('high')
         if not highs or len(highs) != len(closes): 
             highs = closes 
@@ -88,7 +87,6 @@ def calculate_metrics(df):
     df['Std_20'] = df['Close'].rolling(window=20).std()
     
     # 1. Main Z-Score (Current Close vs 20d)
-    # Using np.where to prevent DivideByZero errors
     df['Z_Close'] = np.where(df['Std_20'] > 0, (df['Close'] - df['Mean_20']) / df['Std_20'], 0)
     
     # 2. Shadow Z-Score (Intraday High vs 20d)
@@ -116,7 +114,6 @@ def get_signal(z, rank, vol, z_high):
     if pd.isna(z): return "DATA ERROR", "neut", "none"
     safe_rank = 50 if pd.isna(rank) else rank
 
-    # Logic Hierarchy
     if z_high > 3.0 and z < 2.5: return "REJECTION WICK (Trap)", "bear", "rejection"
     if z < -2.0 and safe_rank < 5: return "EXTREME OVERSOLD", "bull", "oversold"
     if z > 2.0 and vol > 1.5: return "BREAKOUT DETECTED", "bull", "breakout"
@@ -136,20 +133,24 @@ def main():
         st.checkbox("Do I have a predefined Stop Loss?")
         st.checkbox("Am I chasing a green candle?")
         st.divider()
-        st.caption("v21.3 Certified Edition")
+        st.caption("v21.4 Search Patch")
 
-    st.title("🛡️ Quant Scanner v21.3")
+    st.title("🛡️ Quant Scanner v21.4")
     
     col_input, col_rest = st.columns([1, 4])
     with col_input:
-        default_ticker = st.session_state.analyzed_ticker if st.session_state.analyzed_ticker else "MU"
-        ticker_input = st.text_input("Ticker", value=default_ticker).upper()
+        # BUG FIX: Removed 'value=st.session_state.analyzed_ticker'
+        # Now the text box is empty or holds what you typed last, preventing the "fight"
+        ticker_input = st.text_input("Ticker", placeholder="Enter Ticker (e.g. NVDA)").upper()
         run = st.button("Run Analysis", type="primary")
 
-    if run:
-        st.session_state.analyzed_ticker = ticker_input
-        with st.spinner(f"Scanning {ticker_input}..."):
-            df, err = fetch_data(ticker_input)
+    # If user didn't type anything, use the last analyzed ticker
+    target_ticker = ticker_input if ticker_input else st.session_state.analyzed_ticker
+
+    if run and target_ticker:
+        st.session_state.analyzed_ticker = target_ticker
+        with st.spinner(f"Scanning {target_ticker}..."):
+            df, err = fetch_data(target_ticker)
             if err:
                 st.error(f"🛑 {err}")
                 st.session_state.data = None
@@ -160,8 +161,8 @@ def main():
                 st.session_state.data = calculate_metrics(df)
 
     if st.session_state.data is not None:
-        if ticker_input != st.session_state.analyzed_ticker:
-            st.warning(f"⚠️ **MISMATCH:** Displaying data for **{st.session_state.analyzed_ticker}**. Click 'Run Analysis' to update.")
+        # Show which ticker we are actually looking at
+        st.caption(f"Showing Analysis for: **{st.session_state.analyzed_ticker}**")
         
         df = st.session_state.data
         cur = df.iloc[-1]
@@ -183,19 +184,11 @@ def main():
         c1.metric("Price", f"${cur['Close']:.2f}")
         c2.metric("Trend (20d)", f"${cur['Mean_20']:.2f}")
         c3.metric("Trend (50d)", f"${cur['SMA_50']:.2f}")
-        
-        # Z-Score
         c4.metric("Z-Score (20d)", f"{cur['Z_Close']:.2f}σ", help="Current live price vs 20-day average.")
-        
-        # Rank (Restored)
         c5.metric("Rank (Real)", rank_display, help="Percentile Rank of today's Z-Score.")
-        
-        # Intraday Reach (Restored)
-        # Delta shows the EXACT Z-Score of the High (e.g., 2.15σ)
         c6.metric("Intraday Reach", f"${cur['High']:.2f}", 
                   delta=f"Max Z: {cur['Z_High']:.2f}σ", delta_color="off", 
-                  help="The highest Z-Score reached today. > 3.0 = Rejection Risk.")
-        
+                  help="The highest Z-Score reached today.")
         c7.metric("Vol Ratio", f"{cur['Vol_Ratio']:.1f}x")
         
         st.divider()
@@ -241,7 +234,6 @@ def main():
                 fig.add_vline(x=cur['Z_Close'], line_width=3, line_color="#0066FF")
                 fig.add_annotation(x=cur['Z_Close'], y=0.35, text="CLOSE", font=dict(color="#0066FF", size=14, weight="bold"))
                 
-                # High Marker (Only show if distinct)
                 if cur['Z_High'] > cur['Z_Close'] + 0.3:
                     fig.add_vline(x=cur['Z_High'], line_width=1, line_color="#FF3333", line_dash="dot")
                     fig.add_annotation(x=cur['Z_High'], y=0.25, text="HIGH", font=dict(color="#FF3333", size=12))
