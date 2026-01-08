@@ -6,23 +6,28 @@ from scipy.stats import percentileofscore
 from curl_cffi import requests as crequests
 
 # --- CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="Quant Scanner v14.1", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="Quant Scanner v15.0", page_icon="🛡️")
 
 # --- CUSTOM CSS ---
 st.markdown("""
 <style>
+    /* Classic Table Styling */
     .matrix-table { width: 100%; border-collapse: collapse; font-family: 'Arial', sans-serif; margin-top: 20px; }
     .matrix-table th { background-color: #000; color: #fff; padding: 12px; text-align: left; font-size: 14px; }
     .matrix-table td { padding: 12px; border-bottom: 1px solid #ddd; color: #333; font-size: 14px; }
+    
+    /* Row Highlights */
     .row-bull { background-color: #e6fffa; border-left: 5px solid #00cc99; font-weight: bold; }
     .row-bear { background-color: #fff5f5; border-left: 5px solid #ff3333; font-weight: bold; }
     .row-neut { background-color: #f9f9f9; border-left: 5px solid #999; font-weight: bold; }
     .row-plain { background-color: #fff; color: #666; }
+    
+    /* Metrics */
     div[data-testid="stMetricValue"] { font-size: 32px !important; font-weight: 700 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- ROBUST DATA ENGINE (Patched) ---
+# --- DATA ENGINE (Robust) ---
 @st.cache_data(ttl=300)
 def fetch_data(ticker):
     try:
@@ -44,8 +49,7 @@ def fetch_data(ticker):
         closes = quote.get('close')
         if not timestamps or not closes: return None, "Empty dataset"
 
-        # --- SENIOR DEV FIX: ARRAY ALIGNMENT ---
-        # Ensure Volume matches Close length. If missing, fill with 0.
+        # Safe Volume Handling
         volumes = quote.get('volume')
         if not volumes or len(volumes) != len(closes):
             volumes = [0] * len(closes)
@@ -57,8 +61,7 @@ def fetch_data(ticker):
         })
         
         df.set_index('Date', inplace=True)
-        # Drop rows where Price is missing (Yahoo sometimes sends Nulls in the middle of arrays)
-        df.dropna(subset=['Close'], inplace=True) 
+        df.dropna(subset=['Close'], inplace=True)
         
         return df, None
     except Exception as e:
@@ -66,21 +69,16 @@ def fetch_data(ticker):
 
 # --- QUANT ENGINE ---
 def calculate_metrics(df):
-    # 1. EMA Mean (20-day)
+    # EMA & Z-Score
     df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
-    
-    # 2. Volatility
     df['Std_20'] = df['Close'].rolling(20).std()
-    
-    # 3. Z-Score (Safe Division)
     df['Z_Score'] = np.where(df['Std_20'] > 0, (df['Close'] - df['EMA_20']) / df['Std_20'], 0)
     
-    # 4. Volume Ratio (Safe Division)
-    # If Volume is 0 (Index/ETF), Ratio stays 0 to prevent crashes
+    # Volume Ratio
     df['Vol_Median'] = df['Volume'].rolling(20).median()
     df['Vol_Ratio'] = np.where(df['Vol_Median'] > 0, df['Volume'] / df['Vol_Median'], 0)
 
-    # 5. Percentile Rank
+    # Rank
     df['Z_Rank'] = df['Z_Score'].rolling(252).apply(
         lambda x: percentileofscore(x, x.iloc[-1]), raw=False
     )
@@ -106,7 +104,7 @@ def get_signal(z, rank, vol):
 
 # --- MAIN UI ---
 def main():
-    st.title("🛡️ Quant Scanner v14.1")
+    st.title("🛡️ Quant Scanner v15.0 (UI Fixed)")
     st.caption("Disclaimer: Not financial advice.")
     
     col_input, col_rest = st.columns([1, 4])
@@ -159,19 +157,11 @@ def main():
                         {"id": "noise", "cond": "Noise", "z": "-1.0 to 1.0", "rank": "20-80%", "vol": "Any", "out": "😴 WAIT"},
                     ]
                     
-                    html = """
-<table class="matrix-table">
-    <thead>
-        <tr>
-            <th>Condition</th>
-            <th>Z-Score</th>
-            <th>Rarity</th>
-            <th>Volume</th>
-            <th>Verdict</th>
-        </tr>
-    </thead>
-    <tbody>
-"""
+                    # FIX: Building HTML string cleanly without indentation
+                    html = '<table class="matrix-table">'
+                    html += '<thead><tr><th>Condition</th><th>Z-Score</th><th>Rarity</th><th>Volume</th><th>Verdict</th></tr></thead>'
+                    html += '<tbody>'
+                    
                     for row in matrix_rows:
                         is_active = (row['id'] == sig_id)
                         if is_active:
@@ -183,16 +173,15 @@ def main():
                             css = "row-plain"
                             icon = ""
                         
-                        html += f"""
-        <tr class="{css}">
-            <td>{row['cond']}</td>
-            <td>{row['z']}</td>
-            <td>{row['rank']}</td>
-            <td>{row['vol']}</td>
-            <td>{icon}{row['out']}</td>
-        </tr>"""
+                        html += f'<tr class="{css}">'
+                        html += f'<td>{row["cond"]}</td>'
+                        html += f'<td>{row["z"]}</td>'
+                        html += f'<td>{row["rank"]}</td>'
+                        html += f'<td>{row["vol"]}</td>'
+                        html += f'<td>{icon}{row["out"]}</td>'
+                        html += '</tr>'
                     
-                    html += "</tbody></table>"
+                    html += '</tbody></table>'
                     st.markdown(html, unsafe_allow_html=True)
 
                 with c_chart:
@@ -205,6 +194,7 @@ def main():
                             x=valid_z, nbinsx=40, 
                             marker_color='#444', opacity=0.8, name='History'
                         ))
+                        # FIX: Using 'bold' instead of 'black' to prevent crash
                         fig.add_vline(x=cur['Z_Score'], line_width=4, line_color="#0066FF")
                         fig.add_annotation(
                             x=cur['Z_Score'], y=10, text="NOW", 
