@@ -6,7 +6,7 @@ from scipy.stats import percentileofscore, t
 from curl_cffi import requests as crequests
 
 # --- CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="Quant Scanner v24.2 (Golden Master)", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="Quant Scanner v24.3 (Tech Context)", page_icon="🛡️")
 
 # --- CUSTOM CSS ---
 st.markdown("""
@@ -23,26 +23,17 @@ st.markdown("""
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
     .hero-title { font-size: 24px; font-weight: bold; margin-bottom: 5px; }
-    .hero-subtitle { font-size: 16px; opacity: 0.95; font-weight: 500; }
+    .hero-subtitle { font-size: 16px; opacity: 0.95; font-weight: 500; letter-spacing: 0.5px; }
     
-    /* Dynamic Gradients */
+    /* Gradients */
     .hero-bull { background: linear-gradient(135deg, #00b09b, #96c93d); }
     .hero-bear { background: linear-gradient(135deg, #ff5f6d, #ffc371); }
-    
-    /* Context Aware Gradients */
     .hero-yellow { background: linear-gradient(135deg, #f7971e, #ffd200); color: #222 !important; }
-    .hero-yellow .hero-subtitle { opacity: 0.8; }
-    
     .hero-neut { background: linear-gradient(135deg, #8e9eab, #eef2f3); color: #333 !important; }
 
     /* Metric Styling */
     div[data-testid="stMetricValue"] { font-size: 20px !important; font-weight: 700 !important; font-family: 'Roboto Mono', monospace; }
     div[data-testid="stMetricLabel"] { font-size: 12px !important; color: #666; }
-    
-    /* Matrix Styling */
-    .matrix-table { width: 100%; border-collapse: collapse; font-family: 'Arial', sans-serif; }
-    .matrix-table th { background-color: #333; color: #fff; padding: 10px; font-size: 12px; }
-    .matrix-table td { padding: 8px; border-bottom: 1px solid #ddd; font-size: 13px; }
     
     .stExpander { border: none !important; box-shadow: none !important; background-color: transparent !important; }
 </style>
@@ -98,7 +89,6 @@ def fetch_data(ticker):
         cols = ['Open', 'High', 'Low', 'Close', 'Volume']
         df[cols] = df[cols].apply(pd.to_numeric, errors='coerce')
         df.dropna(subset=cols, inplace=True)
-        
         return df, None
     except Exception as e:
         return None, f"System Error: {str(e)}"
@@ -106,10 +96,7 @@ def fetch_data(ticker):
 # --- QUANT ENGINE ---
 def calculate_metrics(df):
     df['Mean_20'] = df['Close'].rolling(window=20).mean()
-    df['Std_20'] = df['Close'].rolling(window=20).std()
-    
-    # SENIOR DEV FIX: Fill NaN with 0 for new stocks (<20 days data)
-    df['Std_20'] = df['Std_20'].fillna(0)
+    df['Std_20'] = df['Close'].rolling(window=20).std().fillna(0)
     
     df['Z_Close'] = np.where(df['Std_20'] > 0, (df['Close'] - df['Mean_20']) / df['Std_20'], 0)
     df['Z_High'] = np.where(df['Std_20'] > 0, (df['High'] - df['Mean_20']) / df['Std_20'], 0)
@@ -120,19 +107,41 @@ def calculate_metrics(df):
     df['SMA_50'] = df['Close'].rolling(window=50).mean()
     df['SMA_200'] = df['Close'].rolling(window=200).mean()
 
-    df['Vol_Median'] = df['Volume'].rolling(20).median().fillna(0) # IPO Safety
+    df['Vol_Median'] = df['Volume'].rolling(20).median().fillna(0)
     df['Vol_Ratio'] = np.where(df['Vol_Median'] > 0, df['Volume'] / df['Vol_Median'], 0)
 
     df['Z_Rank'] = df['Z_Close'].rolling(252).apply(lambda x: percentileofscore(x, x.iloc[-1]), raw=False).fillna(50)
     
     return df
 
-def get_trend_regime(price, sma50, sma200):
-    if pd.isna(sma50) or pd.isna(sma200): return "INSUFFICIENT DATA"
-    if price > sma200 and price > sma50: return "STRONG UPTREND"
-    elif price > sma200 and price < sma50: return "CORRECTION (Dip)"
-    elif price < sma200 and price > sma50: return "RECOVERY (Rally)"
-    else: return "STRONG DOWNTREND"
+# --- NEW: DETAILED CONTEXT GENERATOR ---
+def get_trend_regime(price, sma20, sma50, sma200):
+    """
+    Returns a Tuple: (Header Status, Detailed Context Description)
+    """
+    if pd.isna(sma50) or pd.isna(sma200): 
+        return "INSUFFICIENT DATA", "Calculating..."
+    
+    # 1. MACRO BULLISH (Above 200)
+    if price > sma200:
+        # A. Strong Uptrend (Above 50)
+        if price > sma50:
+            if price > sma20:
+                return "STRONG UPTREND", "Price > 20MA (High Momentum)"
+            else:
+                return "UPTREND (Pullback)", "Price between 20MA & 50MA"
+        # B. Correction (Below 50)
+        else:
+            return "CORRECTION", "Price broken below 50MA"
+            
+    # 2. MACRO BEARISH (Below 200)
+    else:
+        # A. Recovery Attempt (Above 50)
+        if price > sma50:
+            return "RECOVERY ATTEMPT", "Price reclaimed 50MA (Below 200MA)"
+        # B. Downtrend
+        else:
+            return "DOWNTREND", "Price below 50MA & 200MA"
 
 # --- SIGNAL ENGINE ---
 def get_signal(z, rank, vol_ratio, z_high, z_wick, wick_pct, open_price, close_price):
@@ -143,22 +152,19 @@ def get_signal(z, rank, vol_ratio, z_high, z_wick, wick_pct, open_price, close_p
     rejection_threshold = 0.8 if is_red_candle else 1.2
     significant_size = wick_pct > 0.005 
 
-    # --- PRIORITY 0: RED TEAM "PANIC" OVERRIDE ---
-    # If the market is crashing hard, IGNORE volume. A crash is a crash.
-    if z < -3.0:
-        return "FLASH CRASH (Extreme)", "hero-bull", "oversold", "Z-Score < -3.0 (Panic Selling)"
+    # Priority 0: Panic Override
+    if z < -3.0: return "FLASH CRASH (Extreme)", "hero-bull", "oversold", "Z-Score < -3.0"
 
-    # 1. Rejection (With Volume Filter)
+    # Priority 1: Rejection
     if significant_size and (z_wick > rejection_threshold) and (vol_ratio >= 0.5):
         return "PROFIT TAKING (Wick)", "hero-bear", "rejection", f"Rejection Wick: {z_wick:.2f}σ"
 
-    # 2. Extremes
+    # Priority 2: Extremes
     if z_high > 3.0: return "CLIMAX TOP", "hero-bear", "rejection", "Price Extended > 3.0σ"
     if z < -2.0 and safe_rank < 5: return "EXTREME OVERSOLD", "hero-bull", "oversold", "Rank < 5%"
     if z > 2.0 and vol_ratio > 1.5: return "BREAKOUT DETECTED", "hero-bull", "breakout", "Vol > 1.5x"
-    if z > 2.0 and safe_rank > 95: return "STATISTICAL EXTREME", "hero-bear", "extreme", "Rank > 95%"
     
-    # 3. Trend
+    # Priority 3: Trend
     if 1.0 <= z <= 2.0: return "POSITIVE TREND", "hero-bull", "trend", "Z-Score > 1.0"
     if z > 2.0: return "EXTENDED (Caution)", "hero-neut", "extended", "Z-Score > 2.0"
     if z < -2.0: return "NEGATIVE INERTIA", "hero-bear", "downside", "Z-Score < -2.0"
@@ -168,18 +174,18 @@ def get_signal(z, rank, vol_ratio, z_high, z_wick, wick_pct, open_price, close_p
 # --- MAIN UI ---
 def main():
     with st.sidebar:
-        st.header("🧠 Checklist")
-        st.checkbox("Macro Trend (200d) favorable?")
-        st.checkbox("Sector moving with stock?")
-        st.checkbox("Stop Loss defined?")
+        st.header("checklist")
+        st.checkbox("Macro Trend (200d)?")
+        st.checkbox("Sector?")
+        st.checkbox("Stop Loss?")
         st.divider()
-        st.caption("v24.2 Golden Master")
+        st.caption("v24.3 Tech Context")
 
     c_title, c_input = st.columns([1, 2])
     with c_title:
-        st.title("🛡️ Quant v24.2")
+        st.title("🛡️ Quant v24.3")
     with c_input:
-        ticker_input = st.text_input("", placeholder="Type Ticker (e.g. NVDA) + Enter", label_visibility="collapsed").strip().upper()
+        ticker_input = st.text_input("", placeholder="Ticker...", label_visibility="collapsed").strip().upper()
         if ticker_input: st.session_state.analyzed_ticker = ticker_input
 
     target = st.session_state.analyzed_ticker
@@ -189,37 +195,46 @@ def main():
             if err:
                 st.error(f"🛑 {err}")
             else:
-                if len(df) < 200: st.warning("Not enough data for 200d Trend.")
+                if len(df) < 200: st.warning("Need 200d data.")
                 st.session_state.data = calculate_metrics(df)
 
     if st.session_state.data is not None:
         df = st.session_state.data
         cur = df.iloc[-1]
         
-        regime = get_trend_regime(cur['Close'], cur['SMA_50'], cur['SMA_200'])
+        # --- NEW CONTEXT CALL ---
+        regime_title, regime_context = get_trend_regime(
+            cur['Close'], cur['Mean_20'], cur['SMA_50'], cur['SMA_200']
+        )
+        
         sig_txt, sig_css, sig_id, sig_reason = get_signal(
             cur['Z_Close'], cur['Z_Rank'], cur['Vol_Ratio'], 
             cur['Z_High'], cur['Z_Wick'], cur['Wick_Pct'],
             cur['Open'], cur['Close']
         )
         
-        # Context Aware Overrides
+        # Override Logic for "No Signal"
         if sig_id == "none":
-            if "CORRECTION" in regime or "RECOVERY" in regime:
-                sig_css = "hero-yellow" 
-                sig_txt = f"WATCHLIST: {regime}"
-            elif "DOWNTREND" in regime:
-                sig_css = "hero-bear"
-                sig_txt = f"AVOID: {regime}"
-            elif "UPTREND" in regime:
+            if "CORRECTION" in regime_title:
+                sig_css = "hero-yellow"
+                sig_txt = f"WATCHLIST: {regime_title}"
+                sig_reason = regime_context # Use the precise MA context
+            elif "UPTREND" in regime_title:
                 sig_css = "hero-bull"
-                sig_txt = f"HOLD: {regime}"
-        
+                sig_txt = f"HOLD: {regime_title}"
+                sig_reason = regime_context
+            elif "DOWNTREND" in regime_title:
+                sig_css = "hero-bear"
+                sig_txt = f"AVOID: {regime_title}"
+                sig_reason = regime_context
+            else:
+                sig_reason = regime_context
+
         # HERO CARD
         st.markdown(f"""
         <div class="hero-card {sig_css}">
             <div class="hero-title">{sig_txt}</div>
-            <div class="hero-subtitle">Reason: {sig_reason} • Context: {regime}</div>
+            <div class="hero-subtitle">{sig_reason}</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -229,7 +244,7 @@ def main():
         c2.metric("Trend (20d)", f"${cur['Mean_20']:.2f}")
         c3.metric("Trend (50d)", f"${cur['SMA_50']:.2f}")
         c4.metric("Z-Score", f"{cur['Z_Close']:.2f}σ")
-        c5.metric("Rank", f"{cur['Z_Rank']:.1f}%")
+        c5.metric("Rank", f"{cur['Z_Rank']:.0f}%")
         c6.metric("Reach", f"${cur['High']:.2f}", delta=f"Wick: {cur['Z_Wick']:.2f}σ", delta_color="inverse")
         c7.metric("Vol Ratio", f"{cur['Vol_Ratio']:.1f}x")
         
@@ -240,56 +255,19 @@ def main():
         valid_z = df['Z_Close'].tail(200).dropna()
         if len(valid_z) > 0:
             p05, p95 = valid_z.quantile(0.05), valid_z.quantile(0.95)
-            
             fig = go.Figure()
-            fig.add_trace(go.Histogram(
-                x=valid_z, nbinsx=40, histnorm='probability density',
-                marker_color='#444', opacity=0.6, name='History'
-            ))
+            fig.add_trace(go.Histogram(x=valid_z, nbinsx=40, histnorm='probability density', marker_color='#444', opacity=0.6))
             x_range = np.linspace(-4, 4, 100)
-            fig.add_trace(go.Scatter(x=x_range, y=t.pdf(x_range, df=5), mode='lines', line=dict(color='#FF4B4B', width=2), name='Fat Tail'))
-            
+            fig.add_trace(go.Scatter(x=x_range, y=t.pdf(x_range, df=5), mode='lines', line=dict(color='#FF4B4B', width=2)))
             fig.add_vline(x=p05, line_width=1, line_color="#888", line_dash="dash")
             fig.add_vline(x=p95, line_width=1, line_color="#888", line_dash="dash")
-            
             fig.add_vline(x=cur['Z_Close'], line_width=3, line_color="#0066FF")
-            fig.add_annotation(x=cur['Z_Close'], y=0.35, text="TODAY", font=dict(color="#0066FF", size=14, weight="bold"))
-            
+            fig.add_annotation(x=cur['Z_Close'], y=0.35, text="TODAY", font=dict(color="#0066FF", weight="bold"))
             high_text_y = 0.55 if abs(cur['Z_High'] - cur['Z_Close']) < 0.5 else 0.25
             fig.add_vline(x=cur['Z_High'], line_width=1, line_color="#FF3333", line_dash="dot")
-            fig.add_annotation(x=cur['Z_High'], y=high_text_y, text="HIGH", font=dict(color="#FF3333", size=12))
-
-            fig.update_layout(
-                template="plotly_white", height=300, margin=dict(t=0, b=0, l=0, r=0),
-                xaxis_title="Z-Score", yaxis_title=None, showlegend=False
-            )
+            fig.add_annotation(x=cur['Z_High'], y=high_text_y, text="HIGH", font=dict(color="#FF3333"))
+            fig.update_layout(template="plotly_white", height=300, margin=dict(t=0,b=0,l=0,r=0), xaxis_title="Z-Score", yaxis_title=None, showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
-
-        with st.expander("❓ View Signal Logic Matrix (Advanced)"):
-            st.caption("This matrix shows how the 'Hero Signal' above was calculated.")
-            matrix_rows = [
-                {"id": "breakout", "cond": "Breakout", "z": "> 2.0", "vol": "> 1.5x", "out": "🚀 BREAKOUT"},
-                {"id": "extreme", "cond": "Extension", "z": "> 2.0", "vol": "< 1.5x", "out": "⚠️ EXTENDED"},
-                {"id": "rejection", "cond": "Profit Taking", "z": "Wick > 0.8σ", "vol": "> 0.5x", "out": "🔻 REJECTION"},
-                {"id": "rejection", "cond": "Climax Top", "z": "High > 3.0", "vol": "Any", "out": "🔻 CLIMAX TOP"},
-                {"id": "oversold", "cond": "Prime Oversold", "z": "< -2.0", "vol": "Any", "out": "⭐ OVERSOLD"},
-                {"id": "trend", "cond": "Trend", "z": "1.0 to 2.0", "vol": "Any", "out": "🌊 UPTREND"},
-            ]
-            
-            html = '<table class="matrix-table"><thead><tr><th>Condition</th><th>Z-Score</th><th>Vol</th><th>Signal</th></tr></thead><tbody>'
-            for row in matrix_rows:
-                is_active = False
-                if row['id'] == sig_id:
-                     if row['cond'] == "Profit Taking" and "Wick" in sig_txt: is_active = True
-                     elif row['cond'] == "Climax Top" and "CLIMAX" in sig_txt: is_active = True
-                     elif row['id'] != "rejection": is_active = True
-                
-                bg = "#e6fffa" if is_active else "transparent"
-                fw = "bold" if is_active else "normal"
-                icon = "✅ " if is_active else ""
-                html += f'<tr style="background-color: {bg}; font-weight: {fw}"><td>{row["cond"]}</td><td>{row["z"]}</td><td>{row["vol"]}</td><td>{icon}{row["out"]}</td></tr>'
-            html += '</tbody></table>'
-            st.markdown(html, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
