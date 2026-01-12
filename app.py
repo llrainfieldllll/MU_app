@@ -6,7 +6,7 @@ from scipy.stats import percentileofscore, t
 from curl_cffi import requests as crequests
 
 # --- CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="Quant Scanner v24.3 (Tech Context)", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="Quant Scanner v24.4 (Color Logic)", page_icon="🛡️")
 
 # --- CUSTOM CSS ---
 st.markdown("""
@@ -36,6 +36,9 @@ st.markdown("""
     div[data-testid="stMetricLabel"] { font-size: 12px !important; color: #666; }
     
     .stExpander { border: none !important; box-shadow: none !important; background-color: transparent !important; }
+    .matrix-table { width: 100%; border-collapse: collapse; font-family: 'Arial', sans-serif; }
+    .matrix-table th { background-color: #333; color: #fff; padding: 10px; font-size: 12px; }
+    .matrix-table td { padding: 8px; border-bottom: 1px solid #ddd; font-size: 13px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -114,36 +117,27 @@ def calculate_metrics(df):
     
     return df
 
-# --- NEW: DETAILED CONTEXT GENERATOR ---
 def get_trend_regime(price, sma20, sma50, sma200):
-    """
-    Returns a Tuple: (Header Status, Detailed Context Description)
-    """
     if pd.isna(sma50) or pd.isna(sma200): 
         return "INSUFFICIENT DATA", "Calculating..."
     
     # 1. MACRO BULLISH (Above 200)
     if price > sma200:
-        # A. Strong Uptrend (Above 50)
         if price > sma50:
             if price > sma20:
                 return "STRONG UPTREND", "Price > 20MA (High Momentum)"
             else:
                 return "UPTREND (Pullback)", "Price between 20MA & 50MA"
-        # B. Correction (Below 50)
         else:
             return "CORRECTION", "Price broken below 50MA"
             
     # 2. MACRO BEARISH (Below 200)
     else:
-        # A. Recovery Attempt (Above 50)
         if price > sma50:
             return "RECOVERY ATTEMPT", "Price reclaimed 50MA (Below 200MA)"
-        # B. Downtrend
         else:
             return "DOWNTREND", "Price below 50MA & 200MA"
 
-# --- SIGNAL ENGINE ---
 def get_signal(z, rank, vol_ratio, z_high, z_wick, wick_pct, open_price, close_price):
     if pd.isna(z): return "DATA ERROR", "neut", "none", "Error"
     safe_rank = 50 if pd.isna(rank) else rank
@@ -152,24 +146,27 @@ def get_signal(z, rank, vol_ratio, z_high, z_wick, wick_pct, open_price, close_p
     rejection_threshold = 0.8 if is_red_candle else 1.2
     significant_size = wick_pct > 0.005 
 
-    # Priority 0: Panic Override
     if z < -3.0: return "FLASH CRASH (Extreme)", "hero-bull", "oversold", "Z-Score < -3.0"
-
-    # Priority 1: Rejection
     if significant_size and (z_wick > rejection_threshold) and (vol_ratio >= 0.5):
         return "PROFIT TAKING (Wick)", "hero-bear", "rejection", f"Rejection Wick: {z_wick:.2f}σ"
-
-    # Priority 2: Extremes
     if z_high > 3.0: return "CLIMAX TOP", "hero-bear", "rejection", "Price Extended > 3.0σ"
     if z < -2.0 and safe_rank < 5: return "EXTREME OVERSOLD", "hero-bull", "oversold", "Rank < 5%"
     if z > 2.0 and vol_ratio > 1.5: return "BREAKOUT DETECTED", "hero-bull", "breakout", "Vol > 1.5x"
     
-    # Priority 3: Trend
     if 1.0 <= z <= 2.0: return "POSITIVE TREND", "hero-bull", "trend", "Z-Score > 1.0"
     if z > 2.0: return "EXTENDED (Caution)", "hero-neut", "extended", "Z-Score > 2.0"
     if z < -2.0: return "NEGATIVE INERTIA", "hero-bear", "downside", "Z-Score < -2.0"
     
     return "NO SIGNAL", "hero-neut", "none", "Market Noise"
+
+# --- NEW: CUSTOM HTML METRIC ---
+def style_metric(label, value, color):
+    return f"""
+    <div style="display: flex; flex-direction: column; justify-content: center; align-items: flex-start; padding: 0px;">
+        <span style="font-size: 12px; color: #666; margin-bottom: -5px;">{label}</span>
+        <span style="font-size: 24px; font-weight: 700; color: {color}; font-family: 'Roboto Mono', monospace;">{value}</span>
+    </div>
+    """
 
 # --- MAIN UI ---
 def main():
@@ -179,11 +176,11 @@ def main():
         st.checkbox("Sector?")
         st.checkbox("Stop Loss?")
         st.divider()
-        st.caption("v24.3 Tech Context")
+        st.caption("v24.4 Colored Price")
 
     c_title, c_input = st.columns([1, 2])
     with c_title:
-        st.title("🛡️ Quant v24.3")
+        st.title("🛡️ Quant v24.4")
     with c_input:
         ticker_input = st.text_input("", placeholder="Ticker...", label_visibility="collapsed").strip().upper()
         if ticker_input: st.session_state.analyzed_ticker = ticker_input
@@ -202,7 +199,6 @@ def main():
         df = st.session_state.data
         cur = df.iloc[-1]
         
-        # --- NEW CONTEXT CALL ---
         regime_title, regime_context = get_trend_regime(
             cur['Close'], cur['Mean_20'], cur['SMA_50'], cur['SMA_200']
         )
@@ -213,24 +209,16 @@ def main():
             cur['Open'], cur['Close']
         )
         
-        # Override Logic for "No Signal"
         if sig_id == "none":
             if "CORRECTION" in regime_title:
-                sig_css = "hero-yellow"
-                sig_txt = f"WATCHLIST: {regime_title}"
-                sig_reason = regime_context # Use the precise MA context
+                sig_css = "hero-yellow"; sig_txt = f"WATCHLIST: {regime_title}"; sig_reason = regime_context
             elif "UPTREND" in regime_title:
-                sig_css = "hero-bull"
-                sig_txt = f"HOLD: {regime_title}"
-                sig_reason = regime_context
+                sig_css = "hero-bull"; sig_txt = f"HOLD: {regime_title}"; sig_reason = regime_context
             elif "DOWNTREND" in regime_title:
-                sig_css = "hero-bear"
-                sig_txt = f"AVOID: {regime_title}"
-                sig_reason = regime_context
+                sig_css = "hero-bear"; sig_txt = f"AVOID: {regime_title}"; sig_reason = regime_context
             else:
                 sig_reason = regime_context
 
-        # HERO CARD
         st.markdown(f"""
         <div class="hero-card {sig_css}">
             <div class="hero-title">{sig_txt}</div>
@@ -238,9 +226,21 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-        # Metrics
+        # COLOR LOGIC
+        price, sma20, sma50, sma200 = cur['Close'], cur['Mean_20'], cur['SMA_50'], cur['SMA_200']
+        
+        # Handle IPOs (NaN SMAs)
+        s20 = 0 if pd.isna(sma20) else sma20
+        s50 = 0 if pd.isna(sma50) else sma50
+        s200 = 0 if pd.isna(sma200) else sma200
+        
+        if price > s20: price_color = "#00CC96" 
+        elif price > s50: price_color = "#FFA500"
+        elif price > s200: price_color = "#FF4B4B"
+        else: price_color = "#8B0000"
+
         c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
-        c1.metric("Price", f"${cur['Close']:.2f}")
+        c1.markdown(style_metric("Price", f"${price:.2f}", price_color), unsafe_allow_html=True)
         c2.metric("Trend (20d)", f"${cur['Mean_20']:.2f}")
         c3.metric("Trend (50d)", f"${cur['SMA_50']:.2f}")
         c4.metric("Z-Score", f"{cur['Z_Close']:.2f}σ")
@@ -250,7 +250,6 @@ def main():
         
         st.markdown("---")
 
-        # Chart
         st.subheader("Price Behavior Distribution (Last 200 Days)")
         valid_z = df['Z_Close'].tail(200).dropna()
         if len(valid_z) > 0:
