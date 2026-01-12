@@ -6,7 +6,7 @@ from scipy.stats import percentileofscore, t
 from curl_cffi import requests as crequests
 
 # --- CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="Quant Scanner v21.4", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="Quant Scanner v22.2 (Final Stable)", page_icon="🛡️")
 
 # --- CUSTOM CSS ---
 st.markdown("""
@@ -22,7 +22,7 @@ st.markdown("""
     .row-neut { background-color: #f9f9f9; border-left: 5px solid #999; font-weight: bold; }
     .row-plain { background-color: #fff; color: #666; }
     
-    /* Metric Styling - Optimized for 7 Columns */
+    /* Metric Styling */
     div[data-testid="stMetricValue"] { font-size: 22px !important; font-weight: 700 !important; }
     div[data-testid="stMetricLabel"] { font-size: 13px !important; color: #555; }
     
@@ -38,7 +38,7 @@ st.markdown("""
 if 'data' not in st.session_state: st.session_state.data = None
 if 'analyzed_ticker' not in st.session_state: st.session_state.analyzed_ticker = "MU" 
 
-# --- DATA ENGINE ---
+# --- DATA ENGINE (CRASH PROTECTION ADDED) ---
 @st.cache_data(ttl=300)
 def fetch_data(ticker):
     try:
@@ -57,40 +57,54 @@ def fetch_data(ticker):
         timestamps = result.get('timestamp')
         quote = result.get('indicators', {}).get('quote', [{}])[0]
         
-        closes = quote.get('close')
+        closes = quote.get('close', [])
+        highs = quote.get('high', [])
+        lows = quote.get('low', [])
+        opens = quote.get('open', [])
+        volumes = quote.get('volume', [])
+
         if not timestamps or not closes: return None, "Empty dataset"
         
-        # --- CRASH PROTECTION ---
-        highs = quote.get('high')
-        if not highs or len(highs) != len(closes): 
-            highs = closes 
-            
-        volumes = quote.get('volume')
-        if not volumes or len(volumes) != len(closes): 
-            volumes = [0] * len(closes)
+        # --- FIX: ARRAY LENGTH PADDING ---
+        # Ensures all arrays are the exact same length as 'closes' to prevent crashes
+        target_len = len(closes)
+        
+        def pad_list(lst, target, fill_source):
+            if not lst: return fill_source # Fallback to closes if empty
+            if len(lst) < target: return lst + [lst[-1]] * (target - len(lst))
+            return lst[:target]
+
+        highs = pad_list(highs, target_len, closes)
+        lows = pad_list(lows, target_len, closes)
+        opens = pad_list(opens, target_len, closes)
+        volumes = pad_list(volumes, target_len, [0]*target_len)
 
         df = pd.DataFrame({
             'Date': pd.to_datetime(timestamps, unit='s'),
-            'Close': closes,
-            'High': highs,
-            'Volume': volumes
+            'Open': opens, 'High': highs, 'Low': lows, 'Close': closes, 'Volume': volumes
         })
         df.set_index('Date', inplace=True)
-        df.dropna(subset=['Close', 'High'], inplace=True)
+        df.dropna(subset=['Close', 'High', 'Low', 'Open'], inplace=True)
         return df, None
     except Exception as e:
         return None, f"System Error: {str(e)}"
 
-# --- QUANT ENGINE ---
+# --- QUANT ENGINE (NEW WICK MATH) ---
 def calculate_metrics(df):
     df['Mean_20'] = df['Close'].rolling(window=20).mean()
     df['Std_20'] = df['Close'].rolling(window=20).std()
     
-    # 1. Main Z-Score (Current Close vs 20d)
+    # 1. Main Z-Score
     df['Z_Close'] = np.where(df['Std_20'] > 0, (df['Close'] - df['Mean_20']) / df['Std_20'], 0)
     
-    # 2. Shadow Z-Score (Intraday High vs 20d)
+    # 2. Shadow Z-Score (High)
     df['Z_High'] = np.where(df['Std_20'] > 0, (df['High'] - df['Mean_20']) / df['Std_20'], 0)
+    
+    # 3. NEW: Z_Wick (Rejection Energy)
+    df['Z_Wick'] = df['Z_High'] - df['Z_Close']
+    
+    # 4. NEW: Wick Percentage (Volatility Filter)
+    df['Wick_Pct'] = (df['High'] - df['Close']) / df['Close']
     
     df['SMA_50'] = df['Close'].rolling(window=50).mean()
     df['SMA_200'] = df['Close'].rolling(window=200).mean()
@@ -110,20 +124,37 @@ def get_trend_regime(price, sma50, sma200):
     elif price < sma200 and price > sma50: return "🟡 RECOVERY", "pill-yellow"
     else: return "🔴 STRONG DOWNTREND", "pill-red"
 
-def get_signal(z, rank, vol, z_high):
+# --- SIGNAL ENGINE (RED TEAM LOGIC) ---
+def get_signal(z, rank, vol, z_high, z_wick, wick_pct, open_price, close_price):
     if pd.isna(z): return "DATA ERROR", "neut", "none"
     safe_rank = 50 if pd.isna(rank) else rank
 
-    if z_high > 3.0 and z < 2.5: return "REJECTION WICK (Trap)", "bear", "rejection"
+    # --- REJECTION LOGIC ---
+    is_red_candle = close_price < open_price
+    
+    # Logic: If it's a Green Candle, we need MORE evidence (1.2) to call it a rejection.
+    # If it's a Red Candle, we need LESS evidence (0.8).
+    rejection_threshold = 0.8 if is_red_candle else 1.2
+    
+    # Logic: Ignore tiny wicks (< 0.5%) to avoid low-volatility false alarms
+    significant_size = wick_pct > 0.005 
+
+    # 1. The Trap Detection (Priority Override)
+    if significant_size and (z_wick > rejection_threshold):
+        return "PROFIT TAKING (Wick)", "bear", "rejection"
+
+    # 2. Standard Logic
+    if z_high > 3.0: return "CLIMAX TOP", "bear", "rejection"
     if z < -2.0 and safe_rank < 5: return "EXTREME OVERSOLD", "bull", "oversold"
     if z > 2.0 and vol > 1.5: return "BREAKOUT DETECTED", "bull", "breakout"
     if z > 2.0 and safe_rank > 95: return "STATISTICAL EXTREME", "bear", "extreme"
     if 1.0 <= z <= 2.0: return "POSITIVE TREND", "bull", "trend"
     if z > 2.0: return "EXTENDED (Caution)", "neut", "extended"
     if z < -2.0: return "NEGATIVE INERTIA", "bear", "downside"
+    
     return "NO SIGNAL", "neut", "none"
 
-# --- MAIN UI ---
+# --- MAIN UI (ADHD COMPATIBLE) ---
 def main():
     with st.sidebar:
         st.header("🧠 Pre-Trade Checklist")
@@ -133,18 +164,15 @@ def main():
         st.checkbox("Do I have a predefined Stop Loss?")
         st.checkbox("Am I chasing a green candle?")
         st.divider()
-        st.caption("v21.4 Search Patch")
+        st.caption("v22.2 Stable")
 
-    st.title("🛡️ Quant Scanner v21.4")
+    st.title("🛡️ Quant Scanner v22.2")
     
     col_input, col_rest = st.columns([1, 4])
     with col_input:
-        # BUG FIX: Removed 'value=st.session_state.analyzed_ticker'
-        # Now the text box is empty or holds what you typed last, preventing the "fight"
         ticker_input = st.text_input("Ticker", placeholder="Enter Ticker (e.g. NVDA)").upper()
         run = st.button("Run Analysis", type="primary")
 
-    # If user didn't type anything, use the last analyzed ticker
     target_ticker = ticker_input if ticker_input else st.session_state.analyzed_ticker
 
     if run and target_ticker:
@@ -161,34 +189,48 @@ def main():
                 st.session_state.data = calculate_metrics(df)
 
     if st.session_state.data is not None:
-        # Show which ticker we are actually looking at
         st.caption(f"Showing Analysis for: **{st.session_state.analyzed_ticker}**")
         
         df = st.session_state.data
         cur = df.iloc[-1]
         
         regime_txt, regime_css = get_trend_regime(cur['Close'], cur['SMA_50'], cur['SMA_200'])
-        sig_txt, sig_col, sig_id = get_signal(cur['Z_Close'], cur['Z_Rank'], cur['Vol_Ratio'], cur['Z_High'])
+        
+        sig_txt, sig_col, sig_id = get_signal(
+            cur['Z_Close'], cur['Z_Rank'], cur['Vol_Ratio'], 
+            cur['Z_High'], cur['Z_Wick'], cur['Wick_Pct'],
+            cur['Open'], cur['Close']
+        )
+        
         rank_display = f"{cur['Z_Rank']:.1f}%" if not pd.isna(cur['Z_Rank']) else "N/A"
         
-        # --- MACRO CONTEXT ---
+        # --- ADHD DESIGN LOGIC: DIM THE MACRO IF DANGER ---
+        # If there is a REJECTION, we visually "Dim" the Macro Context.
+        if "rejection" in sig_col or "bear" in sig_col:
+            macro_opacity = "0.4"
+            macro_msg = f"⚠️ MACRO IS {regime_txt} (BUT IGNORE IT)"
+        else:
+            macro_opacity = "1.0"
+            macro_msg = regime_txt
+
         st.markdown(f"""
-        <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; margin-bottom: 20px;">
-            <span style="color: #666; font-weight: bold; margin-right: 10px;">MACRO CONTEXT (200D):</span>
-            <span class="trend-pill {regime_css}">{regime_txt}</span>
+        <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; margin-bottom: 20px; opacity: {macro_opacity};">
+            <span style="color: #666; font-weight: bold; margin-right: 10px;">MACRO CONTEXT:</span>
+            <span class="trend-pill {regime_css}">{macro_msg}</span>
         </div>
         """, unsafe_allow_html=True)
 
-        # --- METRICS (7 Columns) ---
+        # --- METRICS (Includes New Wick Data) ---
         c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
         c1.metric("Price", f"${cur['Close']:.2f}")
         c2.metric("Trend (20d)", f"${cur['Mean_20']:.2f}")
         c3.metric("Trend (50d)", f"${cur['SMA_50']:.2f}")
         c4.metric("Z-Score (20d)", f"{cur['Z_Close']:.2f}σ", help="Current live price vs 20-day average.")
         c5.metric("Rank (Real)", rank_display, help="Percentile Rank of today's Z-Score.")
+        # NEW METRIC DISPLAY
         c6.metric("Intraday Reach", f"${cur['High']:.2f}", 
-                  delta=f"Max Z: {cur['Z_High']:.2f}σ", delta_color="off", 
-                  help="The highest Z-Score reached today.")
+                  delta=f"Wick: {cur['Z_Wick']:.2f}σ", delta_color="inverse", 
+                  help=f"Max Z: {cur['Z_High']:.2f}σ | Wick Size: {cur['Z_Wick']:.2f}σ")
         c7.metric("Vol Ratio", f"{cur['Vol_Ratio']:.1f}x")
         
         st.divider()
@@ -201,17 +243,25 @@ def main():
         
         with c_matrix:
             st.subheader("Signal Matrix")
+            # UPDATED MATRIX ROWS
             matrix_rows = [
                 {"id": "breakout", "cond": "Breakout", "z": "> 2.0", "rank": "Any", "vol": "> 1.5x", "out": "🚀 BREAKOUT"},
                 {"id": "extreme", "cond": "Extension", "z": "> 2.0", "rank": "> 95%", "vol": "< 1.5x", "out": "⚠️ EXTENDED"},
-                {"id": "rejection", "cond": "Wick Reject", "z": "High > 3.0", "rank": "Any", "vol": "Any", "out": "🔻 REJECTION"},
+                {"id": "rejection", "cond": "Profit Taking", "z": "Wick > 0.8σ", "rank": "Any", "vol": "Any", "out": "🔻 REJECTION"},
+                {"id": "rejection", "cond": "Climax Top", "z": "High > 3.0", "rank": "Any", "vol": "Any", "out": "🔻 CLIMAX TOP"},
                 {"id": "oversold", "cond": "Prime Oversold", "z": "< -2.0", "rank": "< 5%", "vol": "Any", "out": "⭐ OVERSOLD"},
                 {"id": "trend", "cond": "Trend", "z": "1.0 to 2.0", "rank": "Any", "vol": "Any", "out": "🌊 UPTREND"},
             ]
             
             html = '<table class="matrix-table"><thead><tr><th>Condition</th><th>Z-Score</th><th>Rarity</th><th>Vol</th><th>Signal</th></tr></thead><tbody>'
             for row in matrix_rows:
-                is_active = (row['id'] == sig_id)
+                is_active = False
+                # Precision Matching for Highlighting
+                if row['id'] == sig_id:
+                     if row['cond'] == "Profit Taking" and sig_txt == "PROFIT TAKING (Wick)": is_active = True
+                     elif row['cond'] == "Climax Top" and sig_txt == "CLIMAX TOP": is_active = True
+                     elif row['id'] != "rejection": is_active = True
+                
                 css = "row-bull" if is_active and sig_col=="bull" else "row-bear" if is_active and sig_col=="bear" else "row-rejection" if row['id']=="rejection" and is_active else "row-neut" if is_active else "row-plain"
                 icon = "✅ " if is_active else ""
                 html += f'<tr class="{css}"><td>{row["cond"]}</td><td>{row["z"]}</td><td>{row["rank"]}</td><td>{row["vol"]}</td><td>{icon}{row["out"]}</td></tr>'
