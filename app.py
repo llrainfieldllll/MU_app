@@ -6,7 +6,7 @@ from scipy.stats import percentileofscore, t
 from curl_cffi import requests as crequests
 
 # --- CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="Quant Scanner v22.4 (Polished)", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="Quant Scanner v22.5 (Final Stable)", page_icon="🛡️")
 
 # --- CUSTOM CSS ---
 st.markdown("""
@@ -82,7 +82,7 @@ def fetch_data(ticker):
             'Open': opens, 'High': highs, 'Low': lows, 'Close': closes, 'Volume': volumes
         })
         df.set_index('Date', inplace=True)
-        # Ensure numeric types to prevent object crashes
+        # Ensure numeric types
         cols = ['Open', 'High', 'Low', 'Close', 'Volume']
         df[cols] = df[cols].apply(pd.to_numeric, errors='coerce')
         df.dropna(subset=cols, inplace=True)
@@ -120,7 +120,7 @@ def get_trend_regime(price, sma50, sma200):
     else: return "🔴 STRONG DOWNTREND", "pill-red"
 
 # --- SIGNAL ENGINE ---
-def get_signal(z, rank, vol, z_high, z_wick, wick_pct, open_price, close_price):
+def get_signal(z, rank, vol_ratio, z_high, z_wick, wick_pct, open_price, close_price):
     if pd.isna(z): return "DATA ERROR", "neut", "none"
     safe_rank = 50 if pd.isna(rank) else rank
 
@@ -128,12 +128,14 @@ def get_signal(z, rank, vol, z_high, z_wick, wick_pct, open_price, close_price):
     rejection_threshold = 0.8 if is_red_candle else 1.2
     significant_size = wick_pct > 0.005 
 
-    if significant_size and (z_wick > rejection_threshold):
+    # --- FIX A: VOLUME FILTER ADDED ---
+    # We only trigger rejection if volume is healthy (> 0.5x)
+    if significant_size and (z_wick > rejection_threshold) and (vol_ratio >= 0.5):
         return "PROFIT TAKING (Wick)", "bear", "rejection"
 
     if z_high > 3.0: return "CLIMAX TOP", "bear", "rejection"
     if z < -2.0 and safe_rank < 5: return "EXTREME OVERSOLD", "bull", "oversold"
-    if z > 2.0 and vol > 1.5: return "BREAKOUT DETECTED", "bull", "breakout"
+    if z > 2.0 and vol_ratio > 1.5: return "BREAKOUT DETECTED", "bull", "breakout"
     if z > 2.0 and safe_rank > 95: return "STATISTICAL EXTREME", "bear", "extreme"
     if 1.0 <= z <= 2.0: return "POSITIVE TREND", "bull", "trend"
     if z > 2.0: return "EXTENDED (Caution)", "neut", "extended"
@@ -151,13 +153,12 @@ def main():
         st.checkbox("Do I have a predefined Stop Loss?")
         st.checkbox("Am I chasing a green candle?")
         st.divider()
-        st.caption("v22.4 Senior Patch")
+        st.caption("v22.5 Final Stable")
 
-    st.title("🛡️ Quant Scanner v22.4")
+    st.title("🛡️ Quant Scanner v22.5")
     
     col_input, col_rest = st.columns([1, 4])
     with col_input:
-        # SENIOR FIX: strip() whitespace
         ticker_input = st.text_input("Ticker", placeholder="Enter Ticker (e.g. NVDA)").strip().upper()
         run = st.button("Run Analysis", type="primary")
 
@@ -230,7 +231,7 @@ def main():
             matrix_rows = [
                 {"id": "breakout", "cond": "Breakout", "z": "> 2.0", "rank": "Any", "vol": "> 1.5x", "out": "🚀 BREAKOUT"},
                 {"id": "extreme", "cond": "Extension", "z": "> 2.0", "rank": "> 95%", "vol": "< 1.5x", "out": "⚠️ EXTENDED"},
-                {"id": "rejection", "cond": "Profit Taking", "z": "Wick > 0.8σ", "rank": "Any", "vol": "Any", "out": "🔻 REJECTION"},
+                {"id": "rejection", "cond": "Profit Taking", "z": "Wick > 0.8σ", "rank": "Any", "vol": "> 0.5x", "out": "🔻 REJECTION"},
                 {"id": "rejection", "cond": "Climax Top", "z": "High > 3.0", "rank": "Any", "vol": "Any", "out": "🔻 CLIMAX TOP"},
                 {"id": "oversold", "cond": "Prime Oversold", "z": "< -2.0", "rank": "< 5%", "vol": "Any", "out": "⭐ OVERSOLD"},
                 {"id": "trend", "cond": "Trend", "z": "1.0 to 2.0", "rank": "Any", "vol": "Any", "out": "🌊 UPTREND"},
@@ -251,31 +252,38 @@ def main():
             st.markdown(html, unsafe_allow_html=True)
 
         with c_chart:
-            st.subheader("Probability Density (Close)")
-            valid_z = df['Z_Close'].tail(252).dropna()
+            st.subheader("Price Behavior Distribution (Last 200 Days)")
+            valid_z = df['Z_Close'].tail(200).dropna()
+            
             if len(valid_z) > 0:
                 fig = go.Figure()
                 fig.add_trace(go.Histogram(
                     x=valid_z, nbinsx=40, histnorm='probability density',
-                    marker_color='#444', opacity=0.6, name='Real History'
+                    marker_color='#444', opacity=0.6, name='Past 200 Days'
                 ))
+                
                 x_range = np.linspace(-4, 4, 100)
-                fig.add_trace(go.Scatter(x=x_range, y=t.pdf(x_range, df=5), mode='lines', line=dict(color='#FF4B4B', width=2), name='Fat Tail (T)'))
+                fig.add_trace(go.Scatter(x=x_range, y=t.pdf(x_range, df=5), 
+                            mode='lines', line=dict(color='#FF4B4B', width=2), name='Theoretical Curve'))
                 
                 # Markers
                 fig.add_vline(x=cur['Z_Close'], line_width=3, line_color="#0066FF")
-                fig.add_annotation(x=cur['Z_Close'], y=0.35, text="CLOSE", font=dict(color="#0066FF", size=14, weight="bold"))
+                fig.add_annotation(x=cur['Z_Close'], y=0.35, text="TODAY", 
+                                 font=dict(color="#0066FF", size=14, weight="bold"))
                 
-                # SENIOR FIX: COLLISION DETECTION
-                # If Wick is tiny (<0.5 sigma), move "HIGH" text up so it doesn't overlap "CLOSE"
                 high_text_y = 0.55 if abs(cur['Z_High'] - cur['Z_Close']) < 0.5 else 0.25
-                
                 fig.add_vline(x=cur['Z_High'], line_width=1, line_color="#FF3333", line_dash="dot")
-                fig.add_annotation(x=cur['Z_High'], y=high_text_y, text="HIGH", font=dict(color="#FF3333", size=12))
+                fig.add_annotation(x=cur['Z_High'], y=high_text_y, text="HIGH", 
+                                 font=dict(color="#FF3333", size=12))
 
                 fig.update_layout(
                     template="plotly_white", height=300, margin=dict(t=10, b=20, l=20, r=20),
-                    xaxis_title="Z-Score (20d Current)", yaxis_title="Density", legend=dict(orientation="h", y=1.02)
+                    xaxis_title="Deviation from Normal (Z-Score)", 
+                    yaxis_title="Frequency", 
+                    legend=dict(orientation="h", y=1.02),
+                    # --- FIX B: ADHD "SAFE ZONE" ---
+                    shapes=[dict(type="rect", xref="x", yref="paper", x0=-1, y0=0, x1=1, y1=1, 
+                                 fillcolor="rgba(0,180,0,0.1)", layer="below", line_width=0)]
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
