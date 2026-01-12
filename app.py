@@ -6,7 +6,7 @@ from scipy.stats import percentileofscore, t
 from curl_cffi import requests as crequests
 
 # --- CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="Quant Scanner v22.2 (Final Stable)", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="Quant Scanner v22.4 (Polished)", page_icon="🛡️")
 
 # --- CUSTOM CSS ---
 st.markdown("""
@@ -38,7 +38,7 @@ st.markdown("""
 if 'data' not in st.session_state: st.session_state.data = None
 if 'analyzed_ticker' not in st.session_state: st.session_state.analyzed_ticker = "MU" 
 
-# --- DATA ENGINE (CRASH PROTECTION ADDED) ---
+# --- DATA ENGINE ---
 @st.cache_data(ttl=300)
 def fetch_data(ticker):
     try:
@@ -65,12 +65,10 @@ def fetch_data(ticker):
 
         if not timestamps or not closes: return None, "Empty dataset"
         
-        # --- FIX: ARRAY LENGTH PADDING ---
-        # Ensures all arrays are the exact same length as 'closes' to prevent crashes
+        # --- ROBUST PADDING ---
         target_len = len(closes)
-        
         def pad_list(lst, target, fill_source):
-            if not lst: return fill_source # Fallback to closes if empty
+            if not lst: return fill_source 
             if len(lst) < target: return lst + [lst[-1]] * (target - len(lst))
             return lst[:target]
 
@@ -84,26 +82,24 @@ def fetch_data(ticker):
             'Open': opens, 'High': highs, 'Low': lows, 'Close': closes, 'Volume': volumes
         })
         df.set_index('Date', inplace=True)
-        df.dropna(subset=['Close', 'High', 'Low', 'Open'], inplace=True)
+        # Ensure numeric types to prevent object crashes
+        cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+        df[cols] = df[cols].apply(pd.to_numeric, errors='coerce')
+        df.dropna(subset=cols, inplace=True)
+        
         return df, None
     except Exception as e:
         return None, f"System Error: {str(e)}"
 
-# --- QUANT ENGINE (NEW WICK MATH) ---
+# --- QUANT ENGINE ---
 def calculate_metrics(df):
     df['Mean_20'] = df['Close'].rolling(window=20).mean()
     df['Std_20'] = df['Close'].rolling(window=20).std()
     
-    # 1. Main Z-Score
     df['Z_Close'] = np.where(df['Std_20'] > 0, (df['Close'] - df['Mean_20']) / df['Std_20'], 0)
-    
-    # 2. Shadow Z-Score (High)
     df['Z_High'] = np.where(df['Std_20'] > 0, (df['High'] - df['Mean_20']) / df['Std_20'], 0)
     
-    # 3. NEW: Z_Wick (Rejection Energy)
     df['Z_Wick'] = df['Z_High'] - df['Z_Close']
-    
-    # 4. NEW: Wick Percentage (Volatility Filter)
     df['Wick_Pct'] = (df['High'] - df['Close']) / df['Close']
     
     df['SMA_50'] = df['Close'].rolling(window=50).mean()
@@ -112,7 +108,6 @@ def calculate_metrics(df):
     df['Vol_Median'] = df['Volume'].rolling(20).median()
     df['Vol_Ratio'] = np.where(df['Vol_Median'] > 0, df['Volume'] / df['Vol_Median'], 0)
 
-    # Rank Calculation
     df['Z_Rank'] = df['Z_Close'].rolling(252).apply(lambda x: percentileofscore(x, x.iloc[-1]), raw=False)
     
     return df
@@ -124,26 +119,18 @@ def get_trend_regime(price, sma50, sma200):
     elif price < sma200 and price > sma50: return "🟡 RECOVERY", "pill-yellow"
     else: return "🔴 STRONG DOWNTREND", "pill-red"
 
-# --- SIGNAL ENGINE (RED TEAM LOGIC) ---
+# --- SIGNAL ENGINE ---
 def get_signal(z, rank, vol, z_high, z_wick, wick_pct, open_price, close_price):
     if pd.isna(z): return "DATA ERROR", "neut", "none"
     safe_rank = 50 if pd.isna(rank) else rank
 
-    # --- REJECTION LOGIC ---
     is_red_candle = close_price < open_price
-    
-    # Logic: If it's a Green Candle, we need MORE evidence (1.2) to call it a rejection.
-    # If it's a Red Candle, we need LESS evidence (0.8).
     rejection_threshold = 0.8 if is_red_candle else 1.2
-    
-    # Logic: Ignore tiny wicks (< 0.5%) to avoid low-volatility false alarms
     significant_size = wick_pct > 0.005 
 
-    # 1. The Trap Detection (Priority Override)
     if significant_size and (z_wick > rejection_threshold):
         return "PROFIT TAKING (Wick)", "bear", "rejection"
 
-    # 2. Standard Logic
     if z_high > 3.0: return "CLIMAX TOP", "bear", "rejection"
     if z < -2.0 and safe_rank < 5: return "EXTREME OVERSOLD", "bull", "oversold"
     if z > 2.0 and vol > 1.5: return "BREAKOUT DETECTED", "bull", "breakout"
@@ -154,7 +141,7 @@ def get_signal(z, rank, vol, z_high, z_wick, wick_pct, open_price, close_price):
     
     return "NO SIGNAL", "neut", "none"
 
-# --- MAIN UI (ADHD COMPATIBLE) ---
+# --- MAIN UI ---
 def main():
     with st.sidebar:
         st.header("🧠 Pre-Trade Checklist")
@@ -164,13 +151,14 @@ def main():
         st.checkbox("Do I have a predefined Stop Loss?")
         st.checkbox("Am I chasing a green candle?")
         st.divider()
-        st.caption("v22.2 Stable")
+        st.caption("v22.4 Senior Patch")
 
-    st.title("🛡️ Quant Scanner v22.2")
+    st.title("🛡️ Quant Scanner v22.4")
     
     col_input, col_rest = st.columns([1, 4])
     with col_input:
-        ticker_input = st.text_input("Ticker", placeholder="Enter Ticker (e.g. NVDA)").upper()
+        # SENIOR FIX: strip() whitespace
+        ticker_input = st.text_input("Ticker", placeholder="Enter Ticker (e.g. NVDA)").strip().upper()
         run = st.button("Run Analysis", type="primary")
 
     target_ticker = ticker_input if ticker_input else st.session_state.analyzed_ticker
@@ -204,8 +192,6 @@ def main():
         
         rank_display = f"{cur['Z_Rank']:.1f}%" if not pd.isna(cur['Z_Rank']) else "N/A"
         
-        # --- ADHD DESIGN LOGIC: DIM THE MACRO IF DANGER ---
-        # If there is a REJECTION, we visually "Dim" the Macro Context.
         if "rejection" in sig_col or "bear" in sig_col:
             macro_opacity = "0.4"
             macro_msg = f"⚠️ MACRO IS {regime_txt} (BUT IGNORE IT)"
@@ -220,14 +206,12 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-        # --- METRICS (Includes New Wick Data) ---
         c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
         c1.metric("Price", f"${cur['Close']:.2f}")
         c2.metric("Trend (20d)", f"${cur['Mean_20']:.2f}")
         c3.metric("Trend (50d)", f"${cur['SMA_50']:.2f}")
         c4.metric("Z-Score (20d)", f"{cur['Z_Close']:.2f}σ", help="Current live price vs 20-day average.")
         c5.metric("Rank (Real)", rank_display, help="Percentile Rank of today's Z-Score.")
-        # NEW METRIC DISPLAY
         c6.metric("Intraday Reach", f"${cur['High']:.2f}", 
                   delta=f"Wick: {cur['Z_Wick']:.2f}σ", delta_color="inverse", 
                   help=f"Max Z: {cur['Z_High']:.2f}σ | Wick Size: {cur['Z_Wick']:.2f}σ")
@@ -243,7 +227,6 @@ def main():
         
         with c_matrix:
             st.subheader("Signal Matrix")
-            # UPDATED MATRIX ROWS
             matrix_rows = [
                 {"id": "breakout", "cond": "Breakout", "z": "> 2.0", "rank": "Any", "vol": "> 1.5x", "out": "🚀 BREAKOUT"},
                 {"id": "extreme", "cond": "Extension", "z": "> 2.0", "rank": "> 95%", "vol": "< 1.5x", "out": "⚠️ EXTENDED"},
@@ -256,7 +239,6 @@ def main():
             html = '<table class="matrix-table"><thead><tr><th>Condition</th><th>Z-Score</th><th>Rarity</th><th>Vol</th><th>Signal</th></tr></thead><tbody>'
             for row in matrix_rows:
                 is_active = False
-                # Precision Matching for Highlighting
                 if row['id'] == sig_id:
                      if row['cond'] == "Profit Taking" and sig_txt == "PROFIT TAKING (Wick)": is_active = True
                      elif row['cond'] == "Climax Top" and sig_txt == "CLIMAX TOP": is_active = True
@@ -284,9 +266,12 @@ def main():
                 fig.add_vline(x=cur['Z_Close'], line_width=3, line_color="#0066FF")
                 fig.add_annotation(x=cur['Z_Close'], y=0.35, text="CLOSE", font=dict(color="#0066FF", size=14, weight="bold"))
                 
-                if cur['Z_High'] > cur['Z_Close'] + 0.3:
-                    fig.add_vline(x=cur['Z_High'], line_width=1, line_color="#FF3333", line_dash="dot")
-                    fig.add_annotation(x=cur['Z_High'], y=0.25, text="HIGH", font=dict(color="#FF3333", size=12))
+                # SENIOR FIX: COLLISION DETECTION
+                # If Wick is tiny (<0.5 sigma), move "HIGH" text up so it doesn't overlap "CLOSE"
+                high_text_y = 0.55 if abs(cur['Z_High'] - cur['Z_Close']) < 0.5 else 0.25
+                
+                fig.add_vline(x=cur['Z_High'], line_width=1, line_color="#FF3333", line_dash="dot")
+                fig.add_annotation(x=cur['Z_High'], y=high_text_y, text="HIGH", font=dict(color="#FF3333", size=12))
 
                 fig.update_layout(
                     template="plotly_white", height=300, margin=dict(t=10, b=20, l=20, r=20),
