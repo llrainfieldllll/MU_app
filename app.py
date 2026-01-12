@@ -6,12 +6,11 @@ from scipy.stats import percentileofscore, t
 from curl_cffi import requests as crequests
 
 # --- CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="Quant Scanner v24.0 (UX Edition)", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="Quant Scanner v24.2 (Golden Master)", page_icon="🛡️")
 
-# --- CUSTOM CSS (MODERNIZED) ---
+# --- CUSTOM CSS ---
 st.markdown("""
 <style>
-    /* Global Clean Up */
     .stApp { background-color: #f8f9fa; }
     
     /* Hero Card Styling */
@@ -24,23 +23,27 @@ st.markdown("""
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
     .hero-title { font-size: 24px; font-weight: bold; margin-bottom: 5px; }
-    .hero-subtitle { font-size: 16px; opacity: 0.9; }
+    .hero-subtitle { font-size: 16px; opacity: 0.95; font-weight: 500; }
     
-    /* Color Classes for Hero */
-    .hero-bull { background: linear-gradient(135deg, #00b09b, #96c93d); } /* Green Gradient */
-    .hero-bear { background: linear-gradient(135deg, #ff5f6d, #ffc371); } /* Red Gradient */
-    .hero-neut { background: linear-gradient(135deg, #8e9eab, #eef2f3); color: #333 !important; } /* Gray Gradient */
+    /* Dynamic Gradients */
+    .hero-bull { background: linear-gradient(135deg, #00b09b, #96c93d); }
+    .hero-bear { background: linear-gradient(135deg, #ff5f6d, #ffc371); }
     
+    /* Context Aware Gradients */
+    .hero-yellow { background: linear-gradient(135deg, #f7971e, #ffd200); color: #222 !important; }
+    .hero-yellow .hero-subtitle { opacity: 0.8; }
+    
+    .hero-neut { background: linear-gradient(135deg, #8e9eab, #eef2f3); color: #333 !important; }
+
     /* Metric Styling */
     div[data-testid="stMetricValue"] { font-size: 20px !important; font-weight: 700 !important; font-family: 'Roboto Mono', monospace; }
     div[data-testid="stMetricLabel"] { font-size: 12px !important; color: #666; }
     
-    /* Matrix Table (Hidden by default now) */
+    /* Matrix Styling */
     .matrix-table { width: 100%; border-collapse: collapse; font-family: 'Arial', sans-serif; }
     .matrix-table th { background-color: #333; color: #fff; padding: 10px; font-size: 12px; }
     .matrix-table td { padding: 8px; border-bottom: 1px solid #ddd; font-size: 13px; }
     
-    /* Utility */
     .stExpander { border: none !important; box-shadow: none !important; background-color: transparent !important; }
 </style>
 """, unsafe_allow_html=True)
@@ -76,7 +79,6 @@ def fetch_data(ticker):
 
         if not timestamps or not closes: return None, "Empty dataset"
         
-        # Array Padding Logic (Crash Protection)
         target_len = len(closes)
         def pad_list(lst, target, fill_source):
             if not lst: return fill_source 
@@ -106,6 +108,9 @@ def calculate_metrics(df):
     df['Mean_20'] = df['Close'].rolling(window=20).mean()
     df['Std_20'] = df['Close'].rolling(window=20).std()
     
+    # SENIOR DEV FIX: Fill NaN with 0 for new stocks (<20 days data)
+    df['Std_20'] = df['Std_20'].fillna(0)
+    
     df['Z_Close'] = np.where(df['Std_20'] > 0, (df['Close'] - df['Mean_20']) / df['Std_20'], 0)
     df['Z_High'] = np.where(df['Std_20'] > 0, (df['High'] - df['Mean_20']) / df['Std_20'], 0)
     
@@ -115,40 +120,45 @@ def calculate_metrics(df):
     df['SMA_50'] = df['Close'].rolling(window=50).mean()
     df['SMA_200'] = df['Close'].rolling(window=200).mean()
 
-    df['Vol_Median'] = df['Volume'].rolling(20).median()
+    df['Vol_Median'] = df['Volume'].rolling(20).median().fillna(0) # IPO Safety
     df['Vol_Ratio'] = np.where(df['Vol_Median'] > 0, df['Volume'] / df['Vol_Median'], 0)
 
-    df['Z_Rank'] = df['Z_Close'].rolling(252).apply(lambda x: percentileofscore(x, x.iloc[-1]), raw=False)
+    df['Z_Rank'] = df['Z_Close'].rolling(252).apply(lambda x: percentileofscore(x, x.iloc[-1]), raw=False).fillna(50)
     
     return df
 
 def get_trend_regime(price, sma50, sma200):
     if pd.isna(sma50) or pd.isna(sma200): return "INSUFFICIENT DATA"
     if price > sma200 and price > sma50: return "STRONG UPTREND"
-    elif price > sma200 and price < sma50: return "CORRECTION"
-    elif price < sma200 and price > sma50: return "RECOVERY"
-    else: return "DOWNTREND"
+    elif price > sma200 and price < sma50: return "CORRECTION (Dip)"
+    elif price < sma200 and price > sma50: return "RECOVERY (Rally)"
+    else: return "STRONG DOWNTREND"
 
 # --- SIGNAL ENGINE ---
 def get_signal(z, rank, vol_ratio, z_high, z_wick, wick_pct, open_price, close_price):
-    if pd.isna(z): return "DATA ERROR", "neut", "none"
+    if pd.isna(z): return "DATA ERROR", "neut", "none", "Error"
     safe_rank = 50 if pd.isna(rank) else rank
 
     is_red_candle = close_price < open_price
     rejection_threshold = 0.8 if is_red_candle else 1.2
     significant_size = wick_pct > 0.005 
 
-    # Priority 1: Rejection (The Trap)
+    # --- PRIORITY 0: RED TEAM "PANIC" OVERRIDE ---
+    # If the market is crashing hard, IGNORE volume. A crash is a crash.
+    if z < -3.0:
+        return "FLASH CRASH (Extreme)", "hero-bull", "oversold", "Z-Score < -3.0 (Panic Selling)"
+
+    # 1. Rejection (With Volume Filter)
     if significant_size and (z_wick > rejection_threshold) and (vol_ratio >= 0.5):
         return "PROFIT TAKING (Wick)", "hero-bear", "rejection", f"Rejection Wick: {z_wick:.2f}σ"
 
-    # Priority 2: Extremes
+    # 2. Extremes
     if z_high > 3.0: return "CLIMAX TOP", "hero-bear", "rejection", "Price Extended > 3.0σ"
     if z < -2.0 and safe_rank < 5: return "EXTREME OVERSOLD", "hero-bull", "oversold", "Rank < 5%"
     if z > 2.0 and vol_ratio > 1.5: return "BREAKOUT DETECTED", "hero-bull", "breakout", "Vol > 1.5x"
     if z > 2.0 and safe_rank > 95: return "STATISTICAL EXTREME", "hero-bear", "extreme", "Rank > 95%"
     
-    # Priority 3: Trend
+    # 3. Trend
     if 1.0 <= z <= 2.0: return "POSITIVE TREND", "hero-bull", "trend", "Z-Score > 1.0"
     if z > 2.0: return "EXTENDED (Caution)", "hero-neut", "extended", "Z-Score > 2.0"
     if z < -2.0: return "NEGATIVE INERTIA", "hero-bear", "downside", "Z-Score < -2.0"
@@ -157,26 +167,21 @@ def get_signal(z, rank, vol_ratio, z_high, z_wick, wick_pct, open_price, close_p
 
 # --- MAIN UI ---
 def main():
-    # Sidebar: Clean Checklist
     with st.sidebar:
         st.header("🧠 Checklist")
         st.checkbox("Macro Trend (200d) favorable?")
         st.checkbox("Sector moving with stock?")
         st.checkbox("Stop Loss defined?")
         st.divider()
-        st.caption("v24.0 UX Edition")
+        st.caption("v24.2 Golden Master")
 
-    # Layout: Title & Input
     c_title, c_input = st.columns([1, 2])
     with c_title:
-        st.title("🛡️ Quant v24")
+        st.title("🛡️ Quant v24.2")
     with c_input:
         ticker_input = st.text_input("", placeholder="Type Ticker (e.g. NVDA) + Enter", label_visibility="collapsed").strip().upper()
-        if ticker_input:
-             # Auto-run if input changes
-             st.session_state.analyzed_ticker = ticker_input
+        if ticker_input: st.session_state.analyzed_ticker = ticker_input
 
-    # Run Analysis
     target = st.session_state.analyzed_ticker
     if target:
         with st.spinner(f"Scanning {target}..."):
@@ -187,12 +192,10 @@ def main():
                 if len(df) < 200: st.warning("Not enough data for 200d Trend.")
                 st.session_state.data = calculate_metrics(df)
 
-    # Display Dashboard
     if st.session_state.data is not None:
         df = st.session_state.data
         cur = df.iloc[-1]
         
-        # 1. Get Core Data
         regime = get_trend_regime(cur['Close'], cur['SMA_50'], cur['SMA_200'])
         sig_txt, sig_css, sig_id, sig_reason = get_signal(
             cur['Z_Close'], cur['Z_Rank'], cur['Vol_Ratio'], 
@@ -200,16 +203,27 @@ def main():
             cur['Open'], cur['Close']
         )
         
-        # 2. THE HERO CARD (Replaces Matrix & Bias Bar)
-        # This is the "One Thing" the user needs to know immediately
+        # Context Aware Overrides
+        if sig_id == "none":
+            if "CORRECTION" in regime or "RECOVERY" in regime:
+                sig_css = "hero-yellow" 
+                sig_txt = f"WATCHLIST: {regime}"
+            elif "DOWNTREND" in regime:
+                sig_css = "hero-bear"
+                sig_txt = f"AVOID: {regime}"
+            elif "UPTREND" in regime:
+                sig_css = "hero-bull"
+                sig_txt = f"HOLD: {regime}"
+        
+        # HERO CARD
         st.markdown(f"""
         <div class="hero-card {sig_css}">
             <div class="hero-title">{sig_txt}</div>
-            <div class="hero-subtitle">Reason: {sig_reason} • Macro: {regime}</div>
+            <div class="hero-subtitle">Reason: {sig_reason} • Context: {regime}</div>
         </div>
         """, unsafe_allow_html=True)
 
-        # 3. Key Metrics (Clean Row)
+        # Metrics
         c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
         c1.metric("Price", f"${cur['Close']:.2f}")
         c2.metric("Trend (20d)", f"${cur['Mean_20']:.2f}")
@@ -221,27 +235,23 @@ def main():
         
         st.markdown("---")
 
-        # 4. The Chart (Pro Version)
+        # Chart
         st.subheader("Price Behavior Distribution (Last 200 Days)")
         valid_z = df['Z_Close'].tail(200).dropna()
         if len(valid_z) > 0:
             p05, p95 = valid_z.quantile(0.05), valid_z.quantile(0.95)
             
             fig = go.Figure()
-            # Histogram
             fig.add_trace(go.Histogram(
                 x=valid_z, nbinsx=40, histnorm='probability density',
                 marker_color='#444', opacity=0.6, name='History'
             ))
-            # Theoretical Curve
             x_range = np.linspace(-4, 4, 100)
             fig.add_trace(go.Scatter(x=x_range, y=t.pdf(x_range, df=5), mode='lines', line=dict(color='#FF4B4B', width=2), name='Fat Tail'))
             
-            # Percentile Lines
             fig.add_vline(x=p05, line_width=1, line_color="#888", line_dash="dash")
             fig.add_vline(x=p95, line_width=1, line_color="#888", line_dash="dash")
             
-            # Markers
             fig.add_vline(x=cur['Z_Close'], line_width=3, line_color="#0066FF")
             fig.add_annotation(x=cur['Z_Close'], y=0.35, text="TODAY", font=dict(color="#0066FF", size=14, weight="bold"))
             
@@ -255,11 +265,8 @@ def main():
             )
             st.plotly_chart(fig, use_container_width=True)
 
-        # 5. THE HIDDEN MATRIX (The Question Mark Request)
-        # We use an Expander to hide the complexity
         with st.expander("❓ View Signal Logic Matrix (Advanced)"):
             st.caption("This matrix shows how the 'Hero Signal' above was calculated.")
-            
             matrix_rows = [
                 {"id": "breakout", "cond": "Breakout", "z": "> 2.0", "vol": "> 1.5x", "out": "🚀 BREAKOUT"},
                 {"id": "extreme", "cond": "Extension", "z": "> 2.0", "vol": "< 1.5x", "out": "⚠️ EXTENDED"},
@@ -269,7 +276,6 @@ def main():
                 {"id": "trend", "cond": "Trend", "z": "1.0 to 2.0", "vol": "Any", "out": "🌊 UPTREND"},
             ]
             
-            # Simple HTML Table for the Expander
             html = '<table class="matrix-table"><thead><tr><th>Condition</th><th>Z-Score</th><th>Vol</th><th>Signal</th></tr></thead><tbody>'
             for row in matrix_rows:
                 is_active = False
@@ -281,7 +287,6 @@ def main():
                 bg = "#e6fffa" if is_active else "transparent"
                 fw = "bold" if is_active else "normal"
                 icon = "✅ " if is_active else ""
-                
                 html += f'<tr style="background-color: {bg}; font-weight: {fw}"><td>{row["cond"]}</td><td>{row["z"]}</td><td>{row["vol"]}</td><td>{icon}{row["out"]}</td></tr>'
             html += '</tbody></table>'
             st.markdown(html, unsafe_allow_html=True)
