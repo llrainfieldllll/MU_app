@@ -6,7 +6,7 @@ from scipy.stats import percentileofscore, t
 from curl_cffi import requests as crequests
 
 # --- CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="Quant Scanner v24.4 (Color Logic)", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="Quant Scanner v24.5 (Restored Matrix)", page_icon="🛡️")
 
 # --- CUSTOM CSS ---
 st.markdown("""
@@ -35,10 +35,11 @@ st.markdown("""
     div[data-testid="stMetricValue"] { font-size: 20px !important; font-weight: 700 !important; font-family: 'Roboto Mono', monospace; }
     div[data-testid="stMetricLabel"] { font-size: 12px !important; color: #666; }
     
+    /* Matrix Styling */
     .stExpander { border: none !important; box-shadow: none !important; background-color: transparent !important; }
-    .matrix-table { width: 100%; border-collapse: collapse; font-family: 'Arial', sans-serif; }
-    .matrix-table th { background-color: #333; color: #fff; padding: 10px; font-size: 12px; }
-    .matrix-table td { padding: 8px; border-bottom: 1px solid #ddd; font-size: 13px; }
+    .matrix-table { width: 100%; border-collapse: collapse; font-family: 'Arial', sans-serif; margin-top: 10px; }
+    .matrix-table th { background-color: #333; color: #fff; padding: 10px; font-size: 12px; text-align: left; }
+    .matrix-table td { padding: 8px; border-bottom: 1px solid #ddd; font-size: 13px; color: #333; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -121,22 +122,14 @@ def get_trend_regime(price, sma20, sma50, sma200):
     if pd.isna(sma50) or pd.isna(sma200): 
         return "INSUFFICIENT DATA", "Calculating..."
     
-    # 1. MACRO BULLISH (Above 200)
     if price > sma200:
         if price > sma50:
-            if price > sma20:
-                return "STRONG UPTREND", "Price > 20MA (High Momentum)"
-            else:
-                return "UPTREND (Pullback)", "Price between 20MA & 50MA"
-        else:
-            return "CORRECTION", "Price broken below 50MA"
-            
-    # 2. MACRO BEARISH (Below 200)
+            if price > sma20: return "STRONG UPTREND", "Price > 20MA (High Momentum)"
+            else: return "UPTREND (Pullback)", "Price between 20MA & 50MA"
+        else: return "CORRECTION", "Price broken below 50MA"
     else:
-        if price > sma50:
-            return "RECOVERY ATTEMPT", "Price reclaimed 50MA (Below 200MA)"
-        else:
-            return "DOWNTREND", "Price below 50MA & 200MA"
+        if price > sma50: return "RECOVERY ATTEMPT", "Price reclaimed 50MA (Below 200MA)"
+        else: return "DOWNTREND", "Price below 50MA & 200MA"
 
 def get_signal(z, rank, vol_ratio, z_high, z_wick, wick_pct, open_price, close_price):
     if pd.isna(z): return "DATA ERROR", "neut", "none", "Error"
@@ -159,7 +152,6 @@ def get_signal(z, rank, vol_ratio, z_high, z_wick, wick_pct, open_price, close_p
     
     return "NO SIGNAL", "hero-neut", "none", "Market Noise"
 
-# --- NEW: CUSTOM HTML METRIC ---
 def style_metric(label, value, color):
     return f"""
     <div style="display: flex; flex-direction: column; justify-content: center; align-items: flex-start; padding: 0px;">
@@ -176,11 +168,11 @@ def main():
         st.checkbox("Sector?")
         st.checkbox("Stop Loss?")
         st.divider()
-        st.caption("v24.4 Colored Price")
+        st.caption("v24.5 Matrix Restored")
 
     c_title, c_input = st.columns([1, 2])
     with c_title:
-        st.title("🛡️ Quant v24.4")
+        st.title("🛡️ Quant v24.5")
     with c_input:
         ticker_input = st.text_input("", placeholder="Ticker...", label_visibility="collapsed").strip().upper()
         if ticker_input: st.session_state.analyzed_ticker = ticker_input
@@ -219,6 +211,7 @@ def main():
             else:
                 sig_reason = regime_context
 
+        # Hero Card
         st.markdown(f"""
         <div class="hero-card {sig_css}">
             <div class="hero-title">{sig_txt}</div>
@@ -226,10 +219,8 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-        # COLOR LOGIC
+        # Color Logic
         price, sma20, sma50, sma200 = cur['Close'], cur['Mean_20'], cur['SMA_50'], cur['SMA_200']
-        
-        # Handle IPOs (NaN SMAs)
         s20 = 0 if pd.isna(sma20) else sma20
         s50 = 0 if pd.isna(sma50) else sma50
         s200 = 0 if pd.isna(sma200) else sma200
@@ -239,6 +230,7 @@ def main():
         elif price > s200: price_color = "#FF4B4B"
         else: price_color = "#8B0000"
 
+        # Metrics
         c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
         c1.markdown(style_metric("Price", f"${price:.2f}", price_color), unsafe_allow_html=True)
         c2.metric("Trend (20d)", f"${cur['Mean_20']:.2f}")
@@ -250,6 +242,7 @@ def main():
         
         st.markdown("---")
 
+        # Chart
         st.subheader("Price Behavior Distribution (Last 200 Days)")
         valid_z = df['Z_Close'].tail(200).dropna()
         if len(valid_z) > 0:
@@ -267,6 +260,33 @@ def main():
             fig.add_annotation(x=cur['Z_High'], y=high_text_y, text="HIGH", font=dict(color="#FF3333"))
             fig.update_layout(template="plotly_white", height=300, margin=dict(t=0,b=0,l=0,r=0), xaxis_title="Z-Score", yaxis_title=None, showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
+
+        # --- RESTORED: THE HIDDEN MATRIX ---
+        with st.expander("❓ View Signal Logic Matrix (Advanced)"):
+            st.caption("How the 'Hero Signal' is calculated:")
+            matrix_rows = [
+                {"id": "breakout", "cond": "Breakout", "z": "> 2.0", "vol": "> 1.5x", "out": "🚀 BREAKOUT"},
+                {"id": "extreme", "cond": "Extension", "z": "> 2.0", "vol": "< 1.5x", "out": "⚠️ EXTENDED"},
+                {"id": "rejection", "cond": "Profit Taking", "z": "Wick > 0.8σ", "vol": "> 0.5x", "out": "🔻 REJECTION"},
+                {"id": "rejection", "cond": "Climax Top", "z": "High > 3.0", "vol": "Any", "out": "🔻 CLIMAX TOP"},
+                {"id": "oversold", "cond": "Prime Oversold", "z": "< -2.0", "vol": "Any", "out": "⭐ OVERSOLD"},
+                {"id": "trend", "cond": "Trend", "z": "1.0 to 2.0", "vol": "Any", "out": "🌊 UPTREND"},
+            ]
+            
+            html = '<table class="matrix-table"><thead><tr><th>Condition</th><th>Z-Score</th><th>Vol</th><th>Signal</th></tr></thead><tbody>'
+            for row in matrix_rows:
+                is_active = False
+                if row['id'] == sig_id:
+                     if row['cond'] == "Profit Taking" and "Wick" in sig_txt: is_active = True
+                     elif row['cond'] == "Climax Top" and "CLIMAX" in sig_txt: is_active = True
+                     elif row['id'] != "rejection": is_active = True
+                
+                bg = "#e6fffa" if is_active else "transparent"
+                fw = "bold" if is_active else "normal"
+                icon = "✅ " if is_active else ""
+                html += f'<tr style="background-color: {bg}; font-weight: {fw}"><td>{row["cond"]}</td><td>{row["z"]}</td><td>{row["vol"]}</td><td>{icon}{row["out"]}</td></tr>'
+            html += '</tbody></table>'
+            st.markdown(html, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
