@@ -6,7 +6,7 @@ from scipy.stats import percentileofscore, t
 from curl_cffi import requests as crequests
 
 # --- CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="Quant Scanner v22.6 (Visual Fix)", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="Quant Scanner v23.0 (Pro Edition)", page_icon="🛡️")
 
 # --- CUSTOM CSS ---
 st.markdown("""
@@ -38,7 +38,7 @@ st.markdown("""
 if 'data' not in st.session_state: st.session_state.data = None
 if 'analyzed_ticker' not in st.session_state: st.session_state.analyzed_ticker = "MU" 
 
-# --- DATA ENGINE ---
+# --- DATA ENGINE (Stability Patch) ---
 @st.cache_data(ttl=300)
 def fetch_data(ticker):
     try:
@@ -65,7 +65,7 @@ def fetch_data(ticker):
 
         if not timestamps or not closes: return None, "Empty dataset"
         
-        # --- ROBUST PADDING ---
+        # --- ROBUST PADDING (Prevents Array Length Crashes) ---
         target_len = len(closes)
         def pad_list(lst, target, fill_source):
             if not lst: return fill_source 
@@ -91,15 +91,21 @@ def fetch_data(ticker):
     except Exception as e:
         return None, f"System Error: {str(e)}"
 
-# --- QUANT ENGINE ---
+# --- QUANT ENGINE (Logic Patch) ---
 def calculate_metrics(df):
     df['Mean_20'] = df['Close'].rolling(window=20).mean()
     df['Std_20'] = df['Close'].rolling(window=20).std()
     
+    # 1. Main Z-Score
     df['Z_Close'] = np.where(df['Std_20'] > 0, (df['Close'] - df['Mean_20']) / df['Std_20'], 0)
+    
+    # 2. Shadow Z-Score (High)
     df['Z_High'] = np.where(df['Std_20'] > 0, (df['High'] - df['Mean_20']) / df['Std_20'], 0)
     
+    # 3. Z_Wick (Rejection Energy)
     df['Z_Wick'] = df['Z_High'] - df['Z_Close']
+    
+    # 4. Wick Percentage (Volatility Filter)
     df['Wick_Pct'] = (df['High'] - df['Close']) / df['Close']
     
     df['SMA_50'] = df['Close'].rolling(window=50).mean()
@@ -108,6 +114,7 @@ def calculate_metrics(df):
     df['Vol_Median'] = df['Volume'].rolling(20).median()
     df['Vol_Ratio'] = np.where(df['Vol_Median'] > 0, df['Volume'] / df['Vol_Median'], 0)
 
+    # Rank Calculation
     df['Z_Rank'] = df['Z_Close'].rolling(252).apply(lambda x: percentileofscore(x, x.iloc[-1]), raw=False)
     
     return df
@@ -119,16 +126,17 @@ def get_trend_regime(price, sma50, sma200):
     elif price < sma200 and price > sma50: return "🟡 RECOVERY", "pill-yellow"
     else: return "🔴 STRONG DOWNTREND", "pill-red"
 
-# --- SIGNAL ENGINE ---
+# --- SIGNAL ENGINE (Soundness Patch) ---
 def get_signal(z, rank, vol_ratio, z_high, z_wick, wick_pct, open_price, close_price):
     if pd.isna(z): return "DATA ERROR", "neut", "none"
     safe_rank = 50 if pd.isna(rank) else rank
 
     is_red_candle = close_price < open_price
+    # Logic: Green candles get more room (1.2), Red candles are strict (0.8)
     rejection_threshold = 0.8 if is_red_candle else 1.2
     significant_size = wick_pct > 0.005 
 
-    # --- FIX A: VOLUME FILTER ADDED ---
+    # --- FINAL LOGIC: MUST HAVE VOLUME ---
     if significant_size and (z_wick > rejection_threshold) and (vol_ratio >= 0.5):
         return "PROFIT TAKING (Wick)", "bear", "rejection"
 
@@ -152,12 +160,13 @@ def main():
         st.checkbox("Do I have a predefined Stop Loss?")
         st.checkbox("Am I chasing a green candle?")
         st.divider()
-        st.caption("v22.6 Visual Fix")
+        st.caption("v23.0 Pro Edition")
 
-    st.title("🛡️ Quant Scanner v22.6")
+    st.title("🛡️ Quant Scanner v23.0")
     
     col_input, col_rest = st.columns([1, 4])
     with col_input:
+        # Input Hygiene
         ticker_input = st.text_input("Ticker", placeholder="Enter Ticker (e.g. NVDA)").strip().upper()
         run = st.button("Run Analysis", type="primary")
 
@@ -192,6 +201,7 @@ def main():
         
         rank_display = f"{cur['Z_Rank']:.1f}%" if not pd.isna(cur['Z_Rank']) else "N/A"
         
+        # --- VISUAL LOGIC: DIM MACRO ON DANGER ---
         if "rejection" in sig_col or "bear" in sig_col:
             macro_opacity = "0.4"
             macro_msg = f"⚠️ MACRO IS {regime_txt} (BUT IGNORE IT)"
@@ -255,28 +265,36 @@ def main():
             valid_z = df['Z_Close'].tail(200).dropna()
             
             if len(valid_z) > 0:
+                # --- DATA DRIVEN PERCENTILE LINES ---
+                p05 = valid_z.quantile(0.05)
+                p95 = valid_z.quantile(0.95)
+                
                 fig = go.Figure()
                 
-                # 1. Add Histogram
+                # 1. Histogram (Real History)
                 fig.add_trace(go.Histogram(
                     x=valid_z, nbinsx=40, histnorm='probability density',
-                    marker_color='#444', opacity=0.6, name='Past 200 Days'
+                    marker_color='#444', opacity=0.6, name='Real History'
                 ))
                 
-                # 2. Add Theoretical Curve
+                # 2. Theoretical Curve
                 x_range = np.linspace(-4, 4, 100)
                 fig.add_trace(go.Scatter(x=x_range, y=t.pdf(x_range, df=5), 
                             mode='lines', line=dict(color='#FF4B4B', width=2), name='Theoretical Curve'))
                 
-                # 3. FIX: Add ADHD "Safe Zone" via add_shape (prevents overwriting markers)
-                fig.add_shape(type="rect", xref="x", yref="paper", x0=-1, y0=0, x1=1, y1=1, 
-                              fillcolor="rgba(0,180,0,0.1)", layer="below", line_width=0)
+                # 3. Percentile Lines (The Truth)
+                fig.add_vline(x=p05, line_width=1, line_color="#888", line_dash="dash")
+                fig.add_annotation(x=p05, y=0.42, text="5%", font=dict(color="#888", size=10))
                 
-                # 4. Markers (Now visible on top)
+                fig.add_vline(x=p95, line_width=1, line_color="#888", line_dash="dash")
+                fig.add_annotation(x=p95, y=0.42, text="95%", font=dict(color="#888", size=10))
+
+                # 4. Markers
                 fig.add_vline(x=cur['Z_Close'], line_width=3, line_color="#0066FF")
                 fig.add_annotation(x=cur['Z_Close'], y=0.35, text="TODAY", 
                                  font=dict(color="#0066FF", size=14, weight="bold"))
                 
+                # Collision Detection
                 high_text_y = 0.55 if abs(cur['Z_High'] - cur['Z_Close']) < 0.5 else 0.25
                 fig.add_vline(x=cur['Z_High'], line_width=1, line_color="#FF3333", line_dash="dot")
                 fig.add_annotation(x=cur['Z_High'], y=high_text_y, text="HIGH", 
