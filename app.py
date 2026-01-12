@@ -6,7 +6,7 @@ from scipy.stats import percentileofscore, t
 from curl_cffi import requests as crequests
 
 # --- CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="Quant Scanner v24.5 (Restored Matrix)", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="Quant Scanner v24.6 (Purple Edition)", page_icon="🛡️")
 
 # --- CUSTOM CSS ---
 st.markdown("""
@@ -25,17 +25,26 @@ st.markdown("""
     .hero-title { font-size: 24px; font-weight: bold; margin-bottom: 5px; }
     .hero-subtitle { font-size: 16px; opacity: 0.95; font-weight: 500; letter-spacing: 0.5px; }
     
-    /* Gradients */
+    /* --- COLOR PALETTE --- */
+    
+    /* 1. BULLISH (Green): Strong Uptrend, Breakouts */
     .hero-bull { background: linear-gradient(135deg, #00b09b, #96c93d); }
+    
+    /* 2. BEARISH (Red): Rejections, Crashes, Downtrends */
     .hero-bear { background: linear-gradient(135deg, #ff5f6d, #ffc371); }
+    
+    /* 3. WATCHLIST (Yellow): Corrections, Dips */
     .hero-yellow { background: linear-gradient(135deg, #f7971e, #ffd200); color: #222 !important; }
+    
+    /* 4. EXTENDED (Purple): Running Hot, Caution (NEW) */
+    .hero-purple { background: linear-gradient(135deg, #667eea, #764ba2); }
+    
+    /* 5. NEUTRAL (Gray): Noise */
     .hero-neut { background: linear-gradient(135deg, #8e9eab, #eef2f3); color: #333 !important; }
 
-    /* Metric Styling */
+    /* Metric & Matrix Styling */
     div[data-testid="stMetricValue"] { font-size: 20px !important; font-weight: 700 !important; font-family: 'Roboto Mono', monospace; }
     div[data-testid="stMetricLabel"] { font-size: 12px !important; color: #666; }
-    
-    /* Matrix Styling */
     .stExpander { border: none !important; box-shadow: none !important; background-color: transparent !important; }
     .matrix-table { width: 100%; border-collapse: collapse; font-family: 'Arial', sans-serif; margin-top: 10px; }
     .matrix-table th { background-color: #333; color: #fff; padding: 10px; font-size: 12px; text-align: left; }
@@ -139,15 +148,24 @@ def get_signal(z, rank, vol_ratio, z_high, z_wick, wick_pct, open_price, close_p
     rejection_threshold = 0.8 if is_red_candle else 1.2
     significant_size = wick_pct > 0.005 
 
+    # 1. Panic Override
     if z < -3.0: return "FLASH CRASH (Extreme)", "hero-bull", "oversold", "Z-Score < -3.0"
+
+    # 2. Rejection
     if significant_size and (z_wick > rejection_threshold) and (vol_ratio >= 0.5):
         return "PROFIT TAKING (Wick)", "hero-bear", "rejection", f"Rejection Wick: {z_wick:.2f}σ"
+
+    # 3. Extremes
     if z_high > 3.0: return "CLIMAX TOP", "hero-bear", "rejection", "Price Extended > 3.0σ"
     if z < -2.0 and safe_rank < 5: return "EXTREME OVERSOLD", "hero-bull", "oversold", "Rank < 5%"
     if z > 2.0 and vol_ratio > 1.5: return "BREAKOUT DETECTED", "hero-bull", "breakout", "Vol > 1.5x"
     
+    # 4. Trend & Extension
     if 1.0 <= z <= 2.0: return "POSITIVE TREND", "hero-bull", "trend", "Z-Score > 1.0"
-    if z > 2.0: return "EXTENDED (Caution)", "hero-neut", "extended", "Z-Score > 2.0"
+    
+    # --- UPDATED: Use PURPLE for Extended ---
+    if z > 2.0: return "EXTENDED (Caution)", "hero-purple", "extended", "Z-Score > 2.0 (Hot)"
+    
     if z < -2.0: return "NEGATIVE INERTIA", "hero-bear", "downside", "Z-Score < -2.0"
     
     return "NO SIGNAL", "hero-neut", "none", "Market Noise"
@@ -168,11 +186,11 @@ def main():
         st.checkbox("Sector?")
         st.checkbox("Stop Loss?")
         st.divider()
-        st.caption("v24.5 Matrix Restored")
+        st.caption("v24.6 Purple Edition")
 
     c_title, c_input = st.columns([1, 2])
     with c_title:
-        st.title("🛡️ Quant v24.5")
+        st.title("🛡️ Quant v24.6")
     with c_input:
         ticker_input = st.text_input("", placeholder="Ticker...", label_visibility="collapsed").strip().upper()
         if ticker_input: st.session_state.analyzed_ticker = ticker_input
@@ -201,6 +219,7 @@ def main():
             cur['Open'], cur['Close']
         )
         
+        # Override Logic for "No Signal"
         if sig_id == "none":
             if "CORRECTION" in regime_title:
                 sig_css = "hero-yellow"; sig_txt = f"WATCHLIST: {regime_title}"; sig_reason = regime_context
@@ -219,7 +238,7 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-        # Color Logic
+        # Color Logic for Price
         price, sma20, sma50, sma200 = cur['Close'], cur['Mean_20'], cur['SMA_50'], cur['SMA_200']
         s20 = 0 if pd.isna(sma20) else sma20
         s50 = 0 if pd.isna(sma50) else sma50
@@ -261,12 +280,12 @@ def main():
             fig.update_layout(template="plotly_white", height=300, margin=dict(t=0,b=0,l=0,r=0), xaxis_title="Z-Score", yaxis_title=None, showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
 
-        # --- RESTORED: THE HIDDEN MATRIX ---
+        # Hidden Matrix
         with st.expander("❓ View Signal Logic Matrix (Advanced)"):
             st.caption("How the 'Hero Signal' is calculated:")
             matrix_rows = [
                 {"id": "breakout", "cond": "Breakout", "z": "> 2.0", "vol": "> 1.5x", "out": "🚀 BREAKOUT"},
-                {"id": "extreme", "cond": "Extension", "z": "> 2.0", "vol": "< 1.5x", "out": "⚠️ EXTENDED"},
+                {"id": "extended", "cond": "Extension", "z": "> 2.0", "vol": "< 1.5x", "out": "⚠️ EXTENDED"},
                 {"id": "rejection", "cond": "Profit Taking", "z": "Wick > 0.8σ", "vol": "> 0.5x", "out": "🔻 REJECTION"},
                 {"id": "rejection", "cond": "Climax Top", "z": "High > 3.0", "vol": "Any", "out": "🔻 CLIMAX TOP"},
                 {"id": "oversold", "cond": "Prime Oversold", "z": "< -2.0", "vol": "Any", "out": "⭐ OVERSOLD"},
@@ -276,10 +295,8 @@ def main():
             html = '<table class="matrix-table"><thead><tr><th>Condition</th><th>Z-Score</th><th>Vol</th><th>Signal</th></tr></thead><tbody>'
             for row in matrix_rows:
                 is_active = False
-                if row['id'] == sig_id:
-                     if row['cond'] == "Profit Taking" and "Wick" in sig_txt: is_active = True
-                     elif row['cond'] == "Climax Top" and "CLIMAX" in sig_txt: is_active = True
-                     elif row['id'] != "rejection": is_active = True
+                if row['id'] == sig_id: is_active = True
+                elif row['id'] == "extended" and sig_id == "extended": is_active = True
                 
                 bg = "#e6fffa" if is_active else "transparent"
                 fw = "bold" if is_active else "normal"
