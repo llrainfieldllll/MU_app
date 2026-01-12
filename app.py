@@ -6,7 +6,7 @@ from scipy.stats import percentileofscore, t
 from curl_cffi import requests as crequests
 
 # --- CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="Quant Scanner v22.5 (Final Stable)", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="Quant Scanner v22.6 (Visual Fix)", page_icon="🛡️")
 
 # --- CUSTOM CSS ---
 st.markdown("""
@@ -129,7 +129,6 @@ def get_signal(z, rank, vol_ratio, z_high, z_wick, wick_pct, open_price, close_p
     significant_size = wick_pct > 0.005 
 
     # --- FIX A: VOLUME FILTER ADDED ---
-    # We only trigger rejection if volume is healthy (> 0.5x)
     if significant_size and (z_wick > rejection_threshold) and (vol_ratio >= 0.5):
         return "PROFIT TAKING (Wick)", "bear", "rejection"
 
@@ -153,9 +152,9 @@ def main():
         st.checkbox("Do I have a predefined Stop Loss?")
         st.checkbox("Am I chasing a green candle?")
         st.divider()
-        st.caption("v22.5 Final Stable")
+        st.caption("v22.6 Visual Fix")
 
-    st.title("🛡️ Quant Scanner v22.5")
+    st.title("🛡️ Quant Scanner v22.6")
     
     col_input, col_rest = st.columns([1, 4])
     with col_input:
@@ -257,16 +256,23 @@ def main():
             
             if len(valid_z) > 0:
                 fig = go.Figure()
+                
+                # 1. Add Histogram
                 fig.add_trace(go.Histogram(
                     x=valid_z, nbinsx=40, histnorm='probability density',
                     marker_color='#444', opacity=0.6, name='Past 200 Days'
                 ))
                 
+                # 2. Add Theoretical Curve
                 x_range = np.linspace(-4, 4, 100)
                 fig.add_trace(go.Scatter(x=x_range, y=t.pdf(x_range, df=5), 
                             mode='lines', line=dict(color='#FF4B4B', width=2), name='Theoretical Curve'))
                 
-                # Markers
+                # 3. FIX: Add ADHD "Safe Zone" via add_shape (prevents overwriting markers)
+                fig.add_shape(type="rect", xref="x", yref="paper", x0=-1, y0=0, x1=1, y1=1, 
+                              fillcolor="rgba(0,180,0,0.1)", layer="below", line_width=0)
+                
+                # 4. Markers (Now visible on top)
                 fig.add_vline(x=cur['Z_Close'], line_width=3, line_color="#0066FF")
                 fig.add_annotation(x=cur['Z_Close'], y=0.35, text="TODAY", 
                                  font=dict(color="#0066FF", size=14, weight="bold"))
@@ -280,10 +286,7 @@ def main():
                     template="plotly_white", height=300, margin=dict(t=10, b=20, l=20, r=20),
                     xaxis_title="Deviation from Normal (Z-Score)", 
                     yaxis_title="Frequency", 
-                    legend=dict(orientation="h", y=1.02),
-                    # --- FIX B: ADHD "SAFE ZONE" ---
-                    shapes=[dict(type="rect", xref="x", yref="paper", x0=-1, y0=0, x1=1, y1=1, 
-                                 fillcolor="rgba(0,180,0,0.1)", layer="below", line_width=0)]
+                    legend=dict(orientation="h", y=1.02)
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
