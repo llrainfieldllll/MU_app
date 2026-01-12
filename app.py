@@ -6,7 +6,7 @@ from scipy.stats import percentileofscore, t
 from curl_cffi import requests as crequests
 
 # --- CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="Quant Scanner v24.6 (Purple Edition)", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="Quant Scanner v24.7 (Production)", page_icon="🛡️")
 
 # --- CUSTOM CSS ---
 st.markdown("""
@@ -26,20 +26,19 @@ st.markdown("""
     .hero-subtitle { font-size: 16px; opacity: 0.95; font-weight: 500; letter-spacing: 0.5px; }
     
     /* --- COLOR PALETTE --- */
-    
-    /* 1. BULLISH (Green): Strong Uptrend, Breakouts */
+    /* 1. BULLISH (Green) */
     .hero-bull { background: linear-gradient(135deg, #00b09b, #96c93d); }
     
-    /* 2. BEARISH (Red): Rejections, Crashes, Downtrends */
+    /* 2. BEARISH (Red) */
     .hero-bear { background: linear-gradient(135deg, #ff5f6d, #ffc371); }
     
-    /* 3. WATCHLIST (Yellow): Corrections, Dips */
+    /* 3. WATCHLIST (Yellow) */
     .hero-yellow { background: linear-gradient(135deg, #f7971e, #ffd200); color: #222 !important; }
     
-    /* 4. EXTENDED (Purple): Running Hot, Caution (NEW) */
+    /* 4. EXTENDED (Purple) */
     .hero-purple { background: linear-gradient(135deg, #667eea, #764ba2); }
     
-    /* 5. NEUTRAL (Gray): Noise */
+    /* 5. NEUTRAL (Gray) */
     .hero-neut { background: linear-gradient(135deg, #8e9eab, #eef2f3); color: #333 !important; }
 
     /* Metric & Matrix Styling */
@@ -106,15 +105,30 @@ def fetch_data(ticker):
     except Exception as e:
         return None, f"System Error: {str(e)}"
 
-# --- QUANT ENGINE ---
+# --- QUANT ENGINE (ATR UPDATED) ---
 def calculate_metrics(df):
+    # 1. Standard Metrics
     df['Mean_20'] = df['Close'].rolling(window=20).mean()
     df['Std_20'] = df['Close'].rolling(window=20).std().fillna(0)
     
+    # 2. Z-Scores
     df['Z_Close'] = np.where(df['Std_20'] > 0, (df['Close'] - df['Mean_20']) / df['Std_20'], 0)
     df['Z_High'] = np.where(df['Std_20'] > 0, (df['High'] - df['Mean_20']) / df['Std_20'], 0)
-    
     df['Z_Wick'] = df['Z_High'] - df['Z_Close']
+    
+    # 3. ATR CALCULATION (Smart Volatility)
+    df['Prev_Close'] = df['Close'].shift(1)
+    df['TR'] = np.maximum(
+        df['High'] - df['Low'], 
+        np.maximum(
+            abs(df['High'] - df['Prev_Close']), 
+            abs(df['Low'] - df['Prev_Close'])
+        )
+    )
+    df['ATR_14'] = df['TR'].rolling(window=14).mean().fillna(0)
+    
+    # 4. Wick Size (USD) for comparison
+    df['Wick_Size_USD'] = df['High'] - df['Close']
     df['Wick_Pct'] = (df['High'] - df['Close']) / df['Close']
     
     df['SMA_50'] = df['Close'].rolling(window=50).mean()
@@ -128,8 +142,7 @@ def calculate_metrics(df):
     return df
 
 def get_trend_regime(price, sma20, sma50, sma200):
-    if pd.isna(sma50) or pd.isna(sma200): 
-        return "INSUFFICIENT DATA", "Calculating..."
+    if pd.isna(sma50) or pd.isna(sma200): return "INSUFFICIENT DATA", "Calculating..."
     
     if price > sma200:
         if price > sma50:
@@ -140,20 +153,27 @@ def get_trend_regime(price, sma20, sma50, sma200):
         if price > sma50: return "RECOVERY ATTEMPT", "Price reclaimed 50MA (Below 200MA)"
         else: return "DOWNTREND", "Price below 50MA & 200MA"
 
-def get_signal(z, rank, vol_ratio, z_high, z_wick, wick_pct, open_price, close_price):
+def get_signal(z, rank, vol_ratio, z_high, z_wick, wick_size_usd, atr_14, open_price, close_price):
     if pd.isna(z): return "DATA ERROR", "neut", "none", "Error"
     safe_rank = 50 if pd.isna(rank) else rank
 
     is_red_candle = close_price < open_price
     rejection_threshold = 0.8 if is_red_candle else 1.2
-    significant_size = wick_pct > 0.005 
+    
+    # --- ATR LOGIC ---
+    # Wick must be > 50% of the 14-day Average True Range
+    significant_size = False
+    if atr_14 > 0:
+        significant_size = wick_size_usd > (0.5 * atr_14)
+    else:
+        significant_size = (wick_size_usd / close_price) > 0.005 # Fallback
 
     # 1. Panic Override
     if z < -3.0: return "FLASH CRASH (Extreme)", "hero-bull", "oversold", "Z-Score < -3.0"
 
     # 2. Rejection
     if significant_size and (z_wick > rejection_threshold) and (vol_ratio >= 0.5):
-        return "PROFIT TAKING (Wick)", "hero-bear", "rejection", f"Rejection Wick: {z_wick:.2f}σ"
+        return "PROFIT TAKING (Wick)", "hero-bear", "rejection", f"Wick > 0.5x ATR & Z-Wick: {z_wick:.2f}σ"
 
     # 3. Extremes
     if z_high > 3.0: return "CLIMAX TOP", "hero-bear", "rejection", "Price Extended > 3.0σ"
@@ -162,10 +182,7 @@ def get_signal(z, rank, vol_ratio, z_high, z_wick, wick_pct, open_price, close_p
     
     # 4. Trend & Extension
     if 1.0 <= z <= 2.0: return "POSITIVE TREND", "hero-bull", "trend", "Z-Score > 1.0"
-    
-    # --- UPDATED: Use PURPLE for Extended ---
     if z > 2.0: return "EXTENDED (Caution)", "hero-purple", "extended", "Z-Score > 2.0 (Hot)"
-    
     if z < -2.0: return "NEGATIVE INERTIA", "hero-bear", "downside", "Z-Score < -2.0"
     
     return "NO SIGNAL", "hero-neut", "none", "Market Noise"
@@ -186,11 +203,11 @@ def main():
         st.checkbox("Sector?")
         st.checkbox("Stop Loss?")
         st.divider()
-        st.caption("v24.6 Purple Edition")
+        st.caption("v24.7 ATR Logic")
 
     c_title, c_input = st.columns([1, 2])
     with c_title:
-        st.title("🛡️ Quant v24.6")
+        st.title("🛡️ Quant v24.7")
     with c_input:
         ticker_input = st.text_input("", placeholder="Ticker...", label_visibility="collapsed").strip().upper()
         if ticker_input: st.session_state.analyzed_ticker = ticker_input
@@ -215,11 +232,11 @@ def main():
         
         sig_txt, sig_css, sig_id, sig_reason = get_signal(
             cur['Z_Close'], cur['Z_Rank'], cur['Vol_Ratio'], 
-            cur['Z_High'], cur['Z_Wick'], cur['Wick_Pct'],
+            cur['Z_High'], cur['Z_Wick'], cur['Wick_Size_USD'], cur['ATR_14'],
             cur['Open'], cur['Close']
         )
         
-        # Override Logic for "No Signal"
+        # Context Overrides for "No Signal"
         if sig_id == "none":
             if "CORRECTION" in regime_title:
                 sig_css = "hero-yellow"; sig_txt = f"WATCHLIST: {regime_title}"; sig_reason = regime_context
@@ -238,7 +255,7 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-        # Color Logic for Price
+        # Price Color Logic (Safe for IPOs)
         price, sma20, sma50, sma200 = cur['Close'], cur['Mean_20'], cur['SMA_50'], cur['SMA_200']
         s20 = 0 if pd.isna(sma20) else sma20
         s50 = 0 if pd.isna(sma50) else sma50
@@ -280,7 +297,7 @@ def main():
             fig.update_layout(template="plotly_white", height=300, margin=dict(t=0,b=0,l=0,r=0), xaxis_title="Z-Score", yaxis_title=None, showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
 
-        # Hidden Matrix
+        # Matrix
         with st.expander("❓ View Signal Logic Matrix (Advanced)"):
             st.caption("How the 'Hero Signal' is calculated:")
             matrix_rows = [
